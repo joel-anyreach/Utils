@@ -1,0 +1,30 @@
+# ── Secrets & credentials ─────────────────────────────────────────────────────
+.env
+oauth_credentials.json
+oauth_token.json
+service_account.json
+*.json
+
+# ── Data / exports ────────────────────────────────────────────────────────────
+*.csv
+exports/
+pipeline/*.csv
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── OS / editor noise ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -4,6 +4,7 @@ oauth_credentials.json
 oauth_token.json
 service_account.json
 *.json
+.streamlit/secrets.toml
 
 # ── Data / exports ────────────────────────────────────────────────────────────
 *.csv

@@ -98,6 +98,41 @@ streamlit run app.py
 
 The GUI opens at **http://localhost:8501**.
 
+---
+
+## Deploying to Streamlit Cloud (shared team URL)
+
+Team members open a URL — no Python install needed.
+
+### 1. Push to GitHub (already done)
+
+### 2. Deploy on Streamlit Cloud
+
+1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with **joel-anyreach**
+2. Click **New app → Deploy a public app from GitHub**
+3. Select repo `joel-anyreach/Utils`, branch `master`, main file `app.py`
+4. Click **Deploy**
+
+### 3. Add secrets
+
+In the app dashboard → **Settings → Secrets**, paste the contents of `.streamlit/secrets.toml.example` with your real values filled in.
+
+**Getting the Google OAuth JSON strings** (run locally, one-time):
+
+```bash
+# Paste output as GOOGLE_OAUTH_CREDENTIALS_JSON
+python -c "import json,pathlib; print(json.dumps(json.loads(pathlib.Path('oauth_credentials.json').read_text())))"
+
+# Paste output as GOOGLE_OAUTH_TOKEN_JSON
+python -c "import json,pathlib; print(json.dumps(json.loads(pathlib.Path('oauth_token.json').read_text())))"
+```
+
+> The app authenticates as `demo@anyreach.ai` using your existing OAuth token — no service account or domain changes needed.
+
+### 4. Share the URL
+
+Once deployed, share the `*.streamlit.app` URL with your team. No GitHub account required to use it.
+
 ### CLI usage (advanced)
 
 ```bash

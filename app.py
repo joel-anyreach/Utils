@@ -4,13 +4,53 @@ Run with:  streamlit run app.py
 """
 import csv
 import io
+import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+
+
+def _inject_streamlit_secrets() -> None:
+    """
+    Streamlit Cloud: read secrets and populate os.environ so the pipeline.py
+    subprocess inherits them.  OAuth credential JSON strings are written to
+    temporary files; the file-path env vars are updated accordingly.
+    Silently does nothing when not on Streamlit Cloud or if secrets are empty.
+    """
+    try:
+        secrets = st.secrets
+        if not secrets:
+            return
+    except Exception:
+        return
+
+    # Flat string secrets → os.environ (skip if already set by a real .env)
+    for key, val in secrets.items():
+        if isinstance(val, str) and key not in os.environ:
+            os.environ[key] = val
+
+    # OAuth credentials: write JSON strings to temp files
+    for json_key, file_env_key in [
+        ("GOOGLE_OAUTH_CREDENTIALS_JSON", "GOOGLE_OAUTH_CREDENTIALS_FILE"),
+        ("GOOGLE_OAUTH_TOKEN_JSON",        "GOOGLE_OAUTH_TOKEN_FILE"),
+    ]:
+        raw = secrets.get(json_key) or os.environ.get(json_key)
+        if raw:
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False, encoding="utf-8"
+            )
+            tmp.write(raw)
+            tmp.close()
+            os.environ[file_env_key] = tmp.name
+
+
+_inject_streamlit_secrets()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 PIPELINE_DIR    = Path(__file__).parent

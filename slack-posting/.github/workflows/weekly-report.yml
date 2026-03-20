@@ -1,0 +1,29 @@
+name: Weekly Instantly Report
+
+on:
+  schedule:
+    - cron: '0 16 * * 1,5'  # 8AM PST (UTC-8) = 16:00 UTC, Mon & Fri
+  workflow_dispatch:          # allows manual run from GitHub UI
+
+jobs:
+  post-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run weekly report
+        env:
+          INSTANTLY_API_KEY: ${{ secrets.INSTANTLY_API_KEY }}
+          SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID:  ${{ secrets.SLACK_CHANNEL_ID }}
+        run: node run-once.js

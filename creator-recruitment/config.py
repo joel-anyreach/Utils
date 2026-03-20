@@ -1,6 +1,11 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from dotenv import load_dotenv
+
+# Directory containing this file — used to resolve credential file paths
+# regardless of the working directory the process was launched from.
+_HERE = Path(__file__).parent
 
 
 @dataclass(frozen=True)
@@ -54,8 +59,8 @@ def load_config() -> Config:
         reoon_api_key=os.getenv("REOON_API_KEY", "").strip(),
 
         google_sheet_id=require("GOOGLE_SHEET_ID"),
-        google_oauth_credentials_file=os.getenv("GOOGLE_OAUTH_CREDENTIALS_FILE", "oauth_credentials.json"),
-        google_oauth_token_file=os.getenv("GOOGLE_OAUTH_TOKEN_FILE", "oauth_token.json"),
+        google_oauth_credentials_file=str(_HERE / os.getenv("GOOGLE_OAUTH_CREDENTIALS_FILE", "oauth_credentials.json")),
+        google_oauth_token_file=str(_HERE / os.getenv("GOOGLE_OAUTH_TOKEN_FILE", "oauth_token.json")),
         sheet_tab_name=os.getenv("SHEET_TAB_NAME", "Leads"),
     )
 

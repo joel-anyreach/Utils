@@ -152,7 +152,7 @@ async def fetch_page_text(domain: str, session: aiohttp.ClientSession) -> str:
         return ""
 
     try:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "lxml")
 
         # Extract meta description first
         meta = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)})

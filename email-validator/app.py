@@ -95,16 +95,17 @@ def color_status(val):
 
 
 def run_async(coro):
-    """Run an async coroutine from sync Streamlit context."""
+    """Run an async coroutine from sync Streamlit context (Python 3.10+ safe)."""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, coro)
-                return future.result()
-        return loop.run_until_complete(coro)
+        asyncio.get_running_loop()
+        # A loop is already running (Streamlit's internal loop).
+        # Offload to a fresh thread where asyncio.run() can create its own loop.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result()
     except RuntimeError:
+        # No running loop — safe to run directly.
         return asyncio.run(coro)
 
 
@@ -376,39 +377,50 @@ if st.session_state.phase1_results:
     if not to_verify:
         st.warning("No emails passed Phase 1 — nothing to send to Phase 2.")
     else:
-        # Guard: Gemini cannot be used for Phase 2
-        if st.session_state.active_provider == "Gemini":
-            st.error(
-                "⚠️ **Gemini** is for Phase 3 enrichment only — it cannot verify emails.  \n"
-                "Please go to the sidebar and set a different active provider "
-                "(Reoon, ZeroBounce, NeverBounce, or Hunter)."
-            )
-            st.stop()
+        # ── Inline provider + key selector ────────────────────────────────────
+        p2_col1, p2_col2, p2_col3 = st.columns([1, 2, 1])
 
-        # Provider info panel
-        p_info_col1, p_info_col2 = st.columns([2, 1])
-        with p_info_col1:
-            st.markdown("#### Active Provider")
-            if st.session_state.active_key_label:
-                st.info(
-                    f"**Provider:** {st.session_state.active_provider}  \n"
-                    f"**Key:** {st.session_state.active_key_label}"
-                )
+        P2_PROVIDERS = ["Reoon", "ZeroBounce", "NeverBounce", "Hunter"]
+
+        with p2_col1:
+            p2_provider = st.selectbox(
+                "Provider",
+                P2_PROVIDERS,
+                index=0,
+                key="p2_provider_sel",
+                help="Select which email verification API to use.",
+            )
+
+        with p2_col2:
+            # Auto-fill from saved key (first saved key for the chosen provider)
+            saved_keys = km.get_keys_for_provider(p2_provider)
+            saved_key_value = list(saved_keys.values())[0] if saved_keys else ""
+            p2_key_input = st.text_input(
+                "API Key",
+                value=saved_key_value,
+                type="password",
+                placeholder="Paste your API key here…",
+                key="p2_key_input",
+                help="Key is pre-filled from your saved keys if available.",
+            )
+            if saved_key_value and p2_key_input == saved_key_value:
+                st.caption(f"💾 Loaded from saved key: *{list(saved_keys.keys())[0]}*")
+            elif p2_key_input:
+                st.caption("🔑 Using manually entered key")
             else:
-                st.error("No active provider set. Go to sidebar to configure one.")
+                st.caption("⚠️ Enter an API key to proceed")
 
-        with p_info_col2:
-            st.markdown("#### Emails to Verify")
-            st.metric("Will send to API", f"{len(to_verify):,}")
-            st.caption(
-                f"({len(df1) - len(to_verify):,} filtered out by Phase 1)"
-            )
+        with p2_col3:
+            st.metric("Emails to Verify", f"{len(to_verify):,}")
+            st.caption(f"({len(df1) - len(to_verify):,} filtered by Phase 1)")
 
-        # Credit balance panel for all providers
+        active_key = p2_key_input.strip()
+
+        # ── Optional: check credits for selected provider ──────────────────────
         st.markdown("#### 💳 Credit Balances (all providers)")
         with st.expander("Check all provider credits", expanded=False):
-            cred_cols = st.columns(len(km.PROVIDERS))
-            for col, p in zip(cred_cols, km.PROVIDERS):
+            cred_cols = st.columns(len(P2_PROVIDERS))
+            for col, p in zip(cred_cols, P2_PROVIDERS):
                 p_keys = km.get_keys_for_provider(p)
                 if p_keys:
                     first_label = list(p_keys.keys())[0]
@@ -424,18 +436,9 @@ if st.session_state.phase1_results:
                     col.metric(p, "—")
                     col.caption("No key saved")
 
-        # Credit check before proceeding
-        if st.session_state.active_key_label:
-            active_key = km.get_key(
-                st.session_state.active_provider,
-                st.session_state.active_key_label
-            )
-
-            # Check credits
-            ok, credits = run_async(
-                prov.check_credits(st.session_state.active_provider, active_key)
-            )
-
+        # ── Live credit check for the currently entered key ────────────────────
+        if active_key:
+            ok, credits = run_async(prov.check_credits(p2_provider, active_key))
             if ok and isinstance(credits, int):
                 st.markdown(f"**Remaining credits:** `{credits:,}`  |  "
                             f"**Emails to verify:** `{len(to_verify):,}`")
@@ -445,92 +448,91 @@ if st.session_state.phase1_results:
                         f"Consider switching providers or splitting the batch."
                     )
 
-            # Concurrency setting
-            concurrency = st.slider(
-                "Concurrent API requests (higher = faster, watch rate limits)",
-                min_value=1, max_value=20, value=5,
+        # ── Concurrency + confirmation + run ──────────────────────────────────
+        concurrency = st.slider(
+            "Concurrent API requests (higher = faster, watch rate limits)",
+            min_value=1, max_value=20, value=5,
+        )
+
+        key_hint = f"•••{active_key[-4:]}" if len(active_key) >= 4 else "****"
+        confirmed = st.checkbox(
+            f"I confirm sending **{len(to_verify):,}** emails to "
+            f"**{p2_provider}** (key: *{key_hint}*)"
+        )
+
+        with act_col2:
+            proceed_btn = st.button(
+                "🚀 Proceed to Phase 2 — API Verification",
+                type="primary",
+                use_container_width=True,
+                disabled=not confirmed or not active_key,
             )
 
-            # Confirmation checkbox
-            confirmed = st.checkbox(
-                f"I confirm sending **{len(to_verify):,}** emails to "
-                f"**{st.session_state.active_provider}** "
-                f"(key: *{st.session_state.active_key_label}*)"
+        if proceed_btn and confirmed and active_key:
+            progress_bar  = st.progress(0)
+            status_text   = st.empty()
+            speed_display = st.empty()
+            t_start = time.time()
+            done_so_far = [0]
+
+            def on_progress(done, total):
+                done_so_far[0] = done
+                pct = done / total
+                progress_bar.progress(pct)
+                elapsed = time.time() - t_start
+                speed   = done / elapsed if elapsed > 0 else done
+                status_text.markdown(
+                    f"Verifying... **{done:,} / {total:,}** "
+                    f"({pct*100:.1f}%)"
+                )
+                speed_display.caption(f"⚡ {speed:.1f} emails/sec")
+
+            with st.spinner("Running Phase 2 API verification..."):
+                api_results = run_async(
+                    prov.verify_batch(
+                        to_verify,
+                        p2_provider,
+                        active_key,
+                        concurrency=concurrency,
+                        progress_callback=on_progress,
+                    )
+                )
+
+            elapsed_total = time.time() - t_start
+            progress_bar.progress(1.0)
+            status_text.empty()
+            speed_display.empty()
+
+            # Merge Phase 2 results back into full result list
+            phase2_map = {
+                email: api_res
+                for email, api_res in zip(to_verify, api_results)
+                if api_res
+            }
+
+            merged = []
+            for row in st.session_state.phase1_results:
+                r = dict(row)
+                if r["email"] in phase2_map:
+                    api = phase2_map[r["email"]]
+                    r["status"]           = api["status"]
+                    r["failure_reason"]   = api["failure_reason"]
+                    r["phase"]            = 2
+                    r["provider"]         = api["provider"]
+                    r["mailbox_exists"]   = api["mailbox_exists"]
+                    r["is_role_based"]    = api.get("is_role_based", r["is_role_based"])
+                    r["is_disposable"]    = api.get("is_disposable", r["is_disposable"])
+                    r["mx_found"]         = api.get("mx_found", r["mx_found"])
+                    r["confidence_score"] = api.get("confidence_score", "")
+                merged.append(r)
+
+            st.session_state.phase2_results = merged
+            st.session_state.phase3_results = None
+            speed2 = len(to_verify) / elapsed_total if elapsed_total > 0 else len(to_verify)
+            st.success(
+                f"Phase 2 complete — **{len(to_verify):,}** emails in "
+                f"**{elapsed_total:.1f}s** ({speed2:.1f} emails/sec)"
             )
-
-            with act_col2:
-                proceed_btn = st.button(
-                    f"🚀 Proceed to Phase 2 — API Verification",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=not confirmed or not st.session_state.active_key_label,
-                )
-
-            if proceed_btn and confirmed:
-                progress_bar  = st.progress(0)
-                status_text   = st.empty()
-                speed_display = st.empty()
-                t_start = time.time()
-                done_so_far = [0]
-
-                def on_progress(done, total):
-                    done_so_far[0] = done
-                    pct = done / total
-                    progress_bar.progress(pct)
-                    elapsed = time.time() - t_start
-                    speed   = done / elapsed if elapsed > 0 else done
-                    status_text.markdown(
-                        f"Verifying... **{done:,} / {total:,}** "
-                        f"({pct*100:.1f}%)"
-                    )
-                    speed_display.caption(f"⚡ {speed:.1f} emails/sec")
-
-                with st.spinner("Running Phase 2 API verification..."):
-                    api_results = run_async(
-                        prov.verify_batch(
-                            to_verify,
-                            st.session_state.active_provider,
-                            active_key,
-                            concurrency=concurrency,
-                            progress_callback=on_progress,
-                        )
-                    )
-
-                elapsed_total = time.time() - t_start
-                progress_bar.progress(1.0)
-                status_text.empty()
-                speed_display.empty()
-
-                # Merge Phase 2 results back into full result list
-                phase2_map = {
-                    email: api_res
-                    for email, api_res in zip(to_verify, api_results)
-                    if api_res
-                }
-
-                merged = []
-                for row in st.session_state.phase1_results:
-                    r = dict(row)
-                    if r["email"] in phase2_map:
-                        api = phase2_map[r["email"]]
-                        r["status"]           = api["status"]
-                        r["failure_reason"]   = api["failure_reason"]
-                        r["phase"]            = 2
-                        r["provider"]         = api["provider"]
-                        r["mailbox_exists"]   = api["mailbox_exists"]
-                        r["is_role_based"]    = api.get("is_role_based", r["is_role_based"])
-                        r["is_disposable"]    = api.get("is_disposable", r["is_disposable"])
-                        r["mx_found"]         = api.get("mx_found", r["mx_found"])
-                        r["confidence_score"] = api.get("confidence_score", "")
-                    merged.append(r)
-
-                st.session_state.phase2_results = merged
-                st.session_state.phase3_results = None
-                speed2 = len(to_verify) / elapsed_total if elapsed_total > 0 else len(to_verify)
-                st.success(
-                    f"Phase 2 complete — **{len(to_verify):,}** emails in "
-                    f"**{elapsed_total:.1f}s** ({speed2:.1f} emails/sec)"
-                )
 
 # Display Phase 2 results
 if st.session_state.phase2_results:

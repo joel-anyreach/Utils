@@ -243,6 +243,27 @@ async def hunter_credits(api_key: str, session: aiohttp.ClientSession) -> Tuple[
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GEMINI — key validation only (used by Phase 3 enrichment, not Phase 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def gemini_credits(api_key: str, session: aiohttp.ClientSession) -> Tuple[bool, int | str]:
+    """Validate a Gemini API key by listing available models."""
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    try:
+        async with session.get(
+            url, params={"key": api_key},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as r:
+            if r.status == 200:
+                return True, "Valid (usage-based billing)"
+            data = await r.json(content_type=None)
+            msg = data.get("error", {}).get("message", f"HTTP {r.status}")
+            return False, msg
+    except Exception as e:
+        return False, str(e)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DISPATCHER
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -251,6 +272,7 @@ PROVIDER_VERIFY = {
     "ZeroBounce":  zerobounce_verify,
     "NeverBounce": neverbounce_verify,
     "Hunter":      hunter_verify,
+    # Gemini is intentionally excluded — it is used for Phase 3 enrichment only
 }
 
 PROVIDER_CREDITS = {
@@ -258,6 +280,7 @@ PROVIDER_CREDITS = {
     "ZeroBounce":  zerobounce_credits,
     "NeverBounce": neverbounce_credits,
     "Hunter":      hunter_credits,
+    "Gemini":      gemini_credits,
 }
 
 

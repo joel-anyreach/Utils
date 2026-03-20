@@ -165,16 +165,20 @@ with st.sidebar:
                 if "test" in sel_label.lower() or "free" in sel_label.lower():
                     st.warning("⚠️ Test/limited key — check quota before large batches.")
 
-                # Make active provider
-                if st.button(f"Set as Active Provider", key=f"active_{provider}"):
-                    st.session_state.active_provider = provider
-                    st.session_state.active_key_label = sel_label
-                    st.rerun()
+                if provider == "Gemini":
+                    # Gemini is Phase 3 only — not a Phase 2 email verification provider
+                    st.info("🏢 Used for **Phase 3 Company Enrichment** only.")
+                else:
+                    # Make active provider (Phase 2 only)
+                    if st.button(f"Set as Active Provider", key=f"active_{provider}"):
+                        st.session_state.active_provider = provider
+                        st.session_state.active_key_label = sel_label
+                        st.rerun()
 
-                # Status indicator
-                if (st.session_state.active_provider == provider and
-                        st.session_state.active_key_label == sel_label):
-                    st.success("🟢 Currently Active")
+                    # Status indicator
+                    if (st.session_state.active_provider == provider and
+                            st.session_state.active_key_label == sel_label):
+                        st.success("🟢 Currently Active")
             else:
                 if cloud_mode:
                     st.caption("No key found in Streamlit Secrets for this provider.")
@@ -223,10 +227,12 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Provider switcher ────────────────────────────────────────────────────
+    # ── Provider switcher (Phase 2 only — Gemini excluded) ───────────────────
     st.markdown("### 🔀 Provider Switcher")
     all_keys = km.get_all_keys()
     for p in km.PROVIDERS:
+        if p == "Gemini":
+            continue  # Gemini is Phase 3 only, managed separately
         p_keys = all_keys.get(p, {})
         if p_keys:
             labels = list(p_keys.keys())
@@ -370,6 +376,15 @@ if st.session_state.phase1_results:
     if not to_verify:
         st.warning("No emails passed Phase 1 — nothing to send to Phase 2.")
     else:
+        # Guard: Gemini cannot be used for Phase 2
+        if st.session_state.active_provider == "Gemini":
+            st.error(
+                "⚠️ **Gemini** is for Phase 3 enrichment only — it cannot verify emails.  \n"
+                "Please go to the sidebar and set a different active provider "
+                "(Reoon, ZeroBounce, NeverBounce, or Hunter)."
+            )
+            st.stop()
+
         # Provider info panel
         p_info_col1, p_info_col2 = st.columns([2, 1])
         with p_info_col1:

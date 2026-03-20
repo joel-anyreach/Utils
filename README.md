@@ -54,8 +54,8 @@ YT_Test/
 ### 1. Clone & install dependencies
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
-cd YOUR_REPO
+git clone https://github.com/joel-anyreach/Utils.git
+cd Utils
 python -m pip install -r requirements.txt
 ```
 

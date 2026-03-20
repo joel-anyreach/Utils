@@ -19,6 +19,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
+        working-directory: slack-posting
         run: npm ci
 
       - name: Run weekly report
@@ -26,4 +27,5 @@ jobs:
           INSTANTLY_API_KEY: ${{ secrets.INSTANTLY_API_KEY }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID:  ${{ secrets.SLACK_CHANNEL_ID }}
+        working-directory: slack-posting
         run: node run-once.js

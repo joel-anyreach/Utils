@@ -1,3 +1,16 @@
+# ── Secrets & credentials ─────────────────────────────────────────────────────
+.env
+oauth_credentials.json
+oauth_token.json
+service_account.json
+*.json
+.streamlit/secrets.toml
+
+# ── Data / exports ────────────────────────────────────────────────────────────
+*.csv
+exports/
+pipeline/*.csv
+
 # ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
@@ -16,6 +29,3 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
-# ── Claude internal ───────────────────────────────────────────────────────────
-.claude/

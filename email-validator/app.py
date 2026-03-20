@@ -158,10 +158,9 @@ with st.sidebar:
                         else:
                             st.error(f"❌ {credits}")
                 with col2:
-                    if not cloud_mode:
-                        if st.button("🗑️ Delete", key=f"del_{provider}"):
-                            km.delete_key(provider, sel_label)
-                            st.rerun()
+                    if st.button("🗑️ Delete", key=f"del_{provider}"):
+                        km.delete_key(provider, sel_label)
+                        st.rerun()
 
                 if "test" in sel_label.lower() or "free" in sel_label.lower():
                     st.warning("⚠️ Test/limited key — check quota before large batches.")
@@ -181,25 +180,23 @@ with st.sidebar:
                             st.session_state.active_key_label == sel_label):
                         st.success("🟢 Currently Active")
             else:
-                if cloud_mode:
-                    st.caption("No key found in Streamlit Secrets for this provider.")
-                else:
-                    st.info("No saved keys yet.")
+                st.info("No saved keys yet.")
 
-            # ── Add new key (local only) ──────────────────────────────────────
-            if not cloud_mode:
-                st.markdown("**Add / Update Key**")
-                new_label = st.text_input("Label", placeholder='e.g. "Production Key"',
-                                          key=f"lbl_{provider}")
-                new_key   = st.text_input("API Key", type="password",
-                                          key=f"key_{provider}")
-                if st.button("💾 Save Key", key=f"save_{provider}"):
-                    if new_label and new_key:
-                        km.save_key(provider, new_label, new_key)
-                        st.success(f"Saved '{new_label}'")
-                        st.rerun()
-                    else:
-                        st.warning("Enter both a label and a key.")
+            # ── Add / Update Key ──────────────────────────────────────────────
+            st.markdown("**Add / Update Key**")
+            if cloud_mode:
+                st.caption("⚠️ Cloud mode — keys saved for this session only (lost on refresh).")
+            new_label = st.text_input("Label", placeholder='e.g. "Production Key"',
+                                      key=f"lbl_{provider}")
+            new_key   = st.text_input("API Key", type="password",
+                                      key=f"key_{provider}")
+            if st.button("💾 Save Key", key=f"save_{provider}"):
+                if new_label and new_key:
+                    km.save_key(provider, new_label, new_key)
+                    st.success(f"Saved '{new_label}'")
+                    st.rerun()
+                else:
+                    st.warning("Enter both a label and a key.")
 
     st.divider()
 

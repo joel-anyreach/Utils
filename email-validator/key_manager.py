@@ -17,8 +17,9 @@ import json
 from pathlib import Path
 from typing import Dict
 
-KEYS_FILE = Path(__file__).parent / "keys.json"
-PROVIDERS  = ["Reoon", "ZeroBounce", "NeverBounce", "Hunter", "Gemini"]
+KEYS_FILE   = Path(__file__).parent / "keys.json"
+PROVIDERS   = ["Reoon", "ZeroBounce", "NeverBounce", "Hunter", "Gemini"]
+_SESSION_STORE = "cloud_session_keys"
 
 
 # ── Mode detection ────────────────────────────────────────────────────────────
@@ -36,6 +37,24 @@ def _secrets_available() -> bool:
         return True
     except Exception:
         return False
+
+
+# ── Cloud: session state (user-entered keys, session-scoped) ─────────────────
+
+def _get_session_keys() -> Dict[str, Dict[str, str]]:
+    try:
+        import streamlit as st
+        return st.session_state.get(_SESSION_STORE, {p: {} for p in PROVIDERS})
+    except Exception:
+        return {p: {} for p in PROVIDERS}
+
+
+def _set_session_keys(data: Dict[str, Dict[str, str]]):
+    try:
+        import streamlit as st
+        st.session_state[_SESSION_STORE] = data
+    except Exception:
+        pass
 
 
 # ── Cloud: read from st.secrets ───────────────────────────────────────────────
@@ -76,6 +95,9 @@ def get_all_keys() -> Dict[str, Dict[str, str]]:
     """Return {provider: {label: key}} for all providers."""
     if _secrets_available():
         data = _load_from_secrets()
+        # Merge session-entered keys on top (cloud mode — user-entered this session)
+        for p, keys in _get_session_keys().items():
+            data.setdefault(p, {}).update(keys)
     else:
         data = _load_local()
     for p in PROVIDERS:
@@ -93,14 +115,24 @@ def get_key(provider: str, label: str) -> str:
 
 
 def save_key(provider: str, label: str, key: str):
-    """Save a key. Only works in local mode."""
-    data = _load_local()
-    data.setdefault(provider, {})[label] = key
-    _save_local(data)
+    """Save a key. In cloud mode, saves to session state (session-scoped)."""
+    if _secrets_available():
+        data = _get_session_keys()
+        data.setdefault(provider, {})[label] = key
+        _set_session_keys(data)
+    else:
+        data = _load_local()
+        data.setdefault(provider, {})[label] = key
+        _save_local(data)
 
 
 def delete_key(provider: str, label: str):
-    """Delete a key. Only works in local mode."""
-    data = _load_local()
-    data.get(provider, {}).pop(label, None)
-    _save_local(data)
+    """Delete a key. In cloud mode, removes from session state only."""
+    if _secrets_available():
+        data = _get_session_keys()
+        data.get(provider, {}).pop(label, None)
+        _set_session_keys(data)
+    else:
+        data = _load_local()
+        data.get(provider, {}).pop(label, None)
+        _save_local(data)

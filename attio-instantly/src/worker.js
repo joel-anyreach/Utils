@@ -32,14 +32,15 @@ export default {
     }
 
     // Normalise inputs
-    const firstName = str(body.firstName);
-    const lastName  = str(body.lastName);
-    const leadEmail = str(body.lead_email ?? body.email).toLowerCase();
-    const jobTitle  = str(body.jobTitle);
-    const campaign  = str(body.campaign_name);
-    const eventType = str(body.event_type);
-    const timestamp = str(body.timestamp) || new Date().toISOString();
-    const seqStep4  = Number.isFinite(Number(body.step)) ? Number(body.step) : 0;
+    const firstName     = str(body.firstName);
+    const lastName      = str(body.lastName);
+    const leadEmail     = str(body.lead_email ?? body.email).toLowerCase();
+    const jobTitle      = str(body.jobTitle);
+    const campaign      = str(body.campaign_name);
+    const eventType     = str(body.event_type);
+    const timestamp     = str(body.timestamp) || new Date().toISOString();
+    const seqStep4      = Number.isFinite(Number(body.step)) ? Number(body.step) : 0;
+    const senderAccount = str(body.email_account);
 
     if (!leadEmail) {
       return json({ error: 'Missing required field: lead_email' }, 400);
@@ -61,6 +62,8 @@ export default {
       last_activity_date:    [{ value: timestamp }],
       seq_step_4:            [{ value: seqStep4 }],
       instantly_lead_status: [{ value: instantlyLeadStatus }],
+      ...(campaign       && { campaign_name_5: [{ value: campaign }] }),
+      ...(senderAccount  && { sender_account:  [{ value: senderAccount }] }),
     };
 
     const attioCreateBody = {
@@ -69,8 +72,7 @@ export default {
         values: {
           ...(fullName && { name: [{ first_name: firstName || undefined, last_name: lastName || undefined, full_name: fullName }] }),
           email_addresses: [{ email_address: leadEmail }],
-          ...(jobTitle  && { job_title:       [{ value: jobTitle }] }),
-          ...(campaign  && { campaign_name_5: [{ value: campaign }] }),
+          ...(jobTitle && { job_title: [{ value: jobTitle }] }),
           ...sharedFields,
         },
       },
@@ -96,7 +98,7 @@ export default {
     }
 
     // Handle uniqueness conflict
-    const errMsg    = createData.error?.message ?? JSON.stringify(createData);
+    const errMsg     = createData.error?.message ?? JSON.stringify(createData);
     const isConflict = errMsg.includes('uniqueness_conflict');
 
     if (!isConflict) {

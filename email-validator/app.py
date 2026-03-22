@@ -15,6 +15,7 @@ import key_manager as km
 import validators as val
 import providers as prov
 import enricher as enr
+import checkpoint as ckpt
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -465,47 +466,81 @@ if st.session_state.phase1_results:
                 disabled=not confirmed or not active_key,
             )
 
+        # ── Checkpoint detection ──────────────────────────────────────────────
+        all_emails = st.session_state.raw_emails
+        cp2 = ckpt.load(all_emails, 2)
+        cp2_done = len(cp2["results"]) if cp2 else 0
+        cp2_provider_match = cp2 and cp2.get("meta", {}).get("provider") == p2_provider
+
+        if cp2_done > 0 and cp2_provider_match:
+            st.info(
+                f"💾 **Checkpoint found** — {cp2_done:,} / {len(to_verify):,} emails "
+                f"already verified with {p2_provider}. "
+                f"Clicking Run will resume from where it left off."
+            )
+        elif cp2_done > 0 and not cp2_provider_match:
+            saved_provider = cp2.get("meta", {}).get("provider", "unknown")
+            st.warning(
+                f"⚠️ Checkpoint exists for **{saved_provider}** ({cp2_done:,} emails). "
+                f"Switching to **{p2_provider}** will start fresh and discard it."
+            )
+
         if proceed_btn and confirmed and active_key:
-            progress_bar  = st.progress(0)
+            # Load or init checkpoint results map
+            if cp2_done > 0 and cp2_provider_match:
+                saved_results = cp2["results"]
+                already_done  = set(saved_results.keys())
+            else:
+                saved_results = {}
+                already_done  = set()
+                if cp2:
+                    ckpt.clear(all_emails, 2)  # discard mismatched provider checkpoint
+
+            remaining = [e for e in to_verify if e not in already_done]
+            total_count = len(to_verify)
+            offset = len(already_done)
+
+            progress_bar  = st.progress(offset / total_count if total_count else 0)
             status_text   = st.empty()
             speed_display = st.empty()
             t_start = time.time()
-            done_so_far = [0]
+
+            # Checkpoint save callback — called after each email completes
+            def on_result(email, res):
+                saved_results[email] = res
+                ckpt.save(all_emails, 2, saved_results, {"provider": p2_provider})
 
             def on_progress(done, total):
-                done_so_far[0] = done
-                pct = done / total
+                overall_done = offset + done
+                pct = overall_done / total_count if total_count else 1
                 progress_bar.progress(pct)
                 elapsed = time.time() - t_start
                 speed   = done / elapsed if elapsed > 0 else done
                 status_text.markdown(
-                    f"Verifying... **{done:,} / {total:,}** "
+                    f"Verifying... **{overall_done:,} / {total_count:,}** "
                     f"({pct*100:.1f}%)"
                 )
                 speed_display.caption(f"⚡ {speed:.1f} emails/sec")
 
             with st.spinner("Running Phase 2 API verification..."):
-                api_results = run_async(
+                new_results = run_async(
                     prov.verify_batch(
-                        to_verify,
+                        remaining,
                         p2_provider,
                         active_key,
                         concurrency=concurrency,
                         progress_callback=on_progress,
+                        result_callback=on_result,
                     )
-                )
+                ) if remaining else []
 
             elapsed_total = time.time() - t_start
             progress_bar.progress(1.0)
             status_text.empty()
             speed_display.empty()
 
-            # Merge Phase 2 results back into full result list
-            phase2_map = {
-                email: api_res
-                for email, api_res in zip(to_verify, api_results)
-                if api_res
-            }
+            # Merge all results (checkpoint + newly fetched)
+            phase2_map = saved_results  # already complete
 
             merged = []
             for row in st.session_state.phase1_results:
@@ -525,10 +560,16 @@ if st.session_state.phase1_results:
 
             st.session_state.phase2_results = merged
             st.session_state.phase3_results = None
-            speed2 = len(to_verify) / elapsed_total if elapsed_total > 0 else len(to_verify)
+
+            # Clear checkpoint on success
+            ckpt.clear(all_emails, 2)
+
+            verified_count = len(remaining) + offset
+            speed2 = len(remaining) / elapsed_total if elapsed_total > 0 and remaining else 0
             st.success(
-                f"Phase 2 complete — **{len(to_verify):,}** emails in "
-                f"**{elapsed_total:.1f}s** ({speed2:.1f} emails/sec)"
+                f"Phase 2 complete — **{verified_count:,}** emails verified "
+                + (f"({offset:,} from checkpoint + {len(remaining):,} new)" if offset else "")
+                + (f" in **{elapsed_total:.1f}s** ({speed2:.1f} emails/sec)" if remaining else "")
             )
 
 # Display Phase 2 results
@@ -561,6 +602,7 @@ if st.session_state.phase2_results:
 # PHASE 3 — COMPANY ENRICHMENT
 # ─────────────────────────────────────────────────────────────────────────────
 base_results = st.session_state.phase2_results or st.session_state.phase1_results
+all_emails   = st.session_state.raw_emails  # used for checkpoint key in Phase 3
 
 if base_results:
     st.divider()
@@ -631,30 +673,56 @@ if base_results:
         disabled=not gemini_key_value,
     )
 
+    # ── Phase 3 checkpoint detection ─────────────────────────────────────────
+    cp3 = ckpt.load(all_emails, 3)
+    cp3_done = len(cp3["results"]) if cp3 else 0
+
+    if cp3_done > 0:
+        st.info(
+            f"💾 **Checkpoint found** — {cp3_done:,} / {len(unique_domains):,} domains "
+            f"already enriched. Clicking Run will resume from where it left off."
+        )
+
     if run_enrich and gemini_key_value:
-        all_emails = [r["email"] for r in base_results]
-        progress_bar3  = st.progress(0)
+        enrich_emails = [r["email"] for r in base_results]
+
+        # Load existing checkpoint domain results
+        saved_domain_results = dict(cp3["results"]) if cp3 else {}
+        already_done_domains  = set(saved_domain_results.keys())
+        remaining_domains     = [d for d in unique_domains if d not in already_done_domains]
+        offset3 = len(already_done_domains)
+
+        progress_bar3  = st.progress(offset3 / len(unique_domains) if unique_domains else 0)
         status_text3   = st.empty()
         speed_display3 = st.empty()
         t_start3 = time.time()
 
+        # Checkpoint save callback — called after each domain completes
+        def on_enrich_result(domain, result):
+            saved_domain_results[domain] = result
+            ckpt.save(all_emails, 3, saved_domain_results)
+
         def on_enrich_progress(done: int, total: int):
-            pct = done / total if total else 1.0
+            overall_done = offset3 + done
+            overall_total = len(unique_domains)
+            pct = overall_done / overall_total if overall_total else 1.0
             progress_bar3.progress(pct)
             elapsed = time.time() - t_start3
             rate = (done / elapsed * 60) if elapsed > 0 else 0
             status_text3.markdown(
-                f"Enriching domain **{done} / {total}** ({pct*100:.0f}%)"
+                f"Enriching domain **{overall_done} / {overall_total}** ({pct*100:.0f}%)"
             )
             speed_display3.caption(f"⚡ {rate:.1f} domains/min")
 
         with st.spinner("Running company enrichment…"):
             enrich_rows = run_async(
                 enr.enrich_batch(
-                    all_emails,
+                    enrich_emails,
                     gemini_key_value,
                     tier=tier_mode,
                     progress_callback=on_enrich_progress,
+                    result_callback=on_enrich_result,
+                    preloaded_domains=saved_domain_results,
                 )
             )
 
@@ -664,9 +732,14 @@ if base_results:
         speed_display3.empty()
 
         st.session_state.phase3_results = enrich_rows
+
+        # Clear checkpoint on success
+        ckpt.clear(all_emails, 3)
+
         st.success(
-            f"Enrichment complete — **{len(unique_domains):,}** domain(s) in "
-            f"**{elapsed3:.1f}s**"
+            f"Enrichment complete — **{len(unique_domains):,}** domain(s)"
+            + (f" ({offset3:,} from checkpoint + {len(remaining_domains):,} new)" if offset3 else "")
+            + f" in **{elapsed3:.1f}s**"
         )
 
     # ── Display Phase 3 results ───────────────────────────────────────────────

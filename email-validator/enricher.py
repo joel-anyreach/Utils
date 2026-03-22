@@ -263,6 +263,8 @@ async def enrich_batch(
     gemini_key: str,
     tier: str = "free",
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    result_callback=None,
+    preloaded_domains: Optional[Dict] = None,
 ) -> list[dict]:
     """
     Enrich a list of emails with company data.
@@ -270,6 +272,8 @@ async def enrich_batch(
     - Role emails are skipped (blank enrichment columns returned).
     - Domains are deduplicated — one Gemini call per unique domain.
     - tier: "free" (15 RPM, Semaphore(1) + 4s delay) or "paid" (Semaphore(5)).
+    - preloaded_domains: dict of {domain: result} from a previous checkpoint run.
+      Domains already in preloaded_domains are skipped (not re-fetched).
 
     Returns a list of dicts (one per input email), each containing:
       email, first_name, last_name, job_title,
@@ -294,9 +298,11 @@ async def enrich_batch(
     unique_domains = list(dict.fromkeys(
         e.split("@")[1].lower() for e in non_role_emails if "@" in e
     ))
-    total_domains = len(unique_domains)
 
-    domain_results: Dict[str, dict] = {}
+    # Pre-populate from checkpoint; only fetch remaining domains
+    domain_results: Dict[str, dict] = dict(preloaded_domains) if preloaded_domains else {}
+    remaining_domains = [d for d in unique_domains if d not in domain_results]
+    total_new = len(remaining_domains)
     done_count = 0
 
     async with aiohttp.ClientSession() as session:
@@ -307,12 +313,14 @@ async def enrich_batch(
                 result = await enrich_domain(domain, page_text, gemini_key, session)
                 domain_results[domain] = result
                 done_count += 1
+                if result_callback:
+                    result_callback(domain, result)
                 if progress_callback:
-                    progress_callback(done_count, total_domains)
+                    progress_callback(done_count, total_new)
                 if delay > 0:
                     await asyncio.sleep(delay)
 
-        tasks = [_process_domain(d) for d in unique_domains]
+        tasks = [_process_domain(d) for d in remaining_domains]
         await asyncio.gather(*tasks)
 
     # Build per-email output rows

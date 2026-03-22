@@ -400,7 +400,7 @@ with st.form("pipeline_form"):
         )
 
     # ── Advanced Filters ──────────────────────────────────────────────────────
-    with st.expander("Advanced Filters", expanded=False):
+    with st.expander("Advanced Filters", expanded=True):
         st.caption("Language and strict match apply to Keyword Search only. Subscriber range applies to all modes.")
 
         col_lang, col_strict = st.columns([3, 1])

@@ -1,0 +1,16 @@
+{
+  "name": "instantly-slack-reporter",
+  "version": "1.0.0",
+  "description": "Weekly Instantly.ai analytics reporter posted to Slack every Friday at 8AM PST",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test:report": "node -e \"require('./index').runReport()\""
+  },
+  "dependencies": {
+    "@slack/web-api": "^7.3.0",
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3"
+  }
+}

@@ -28,15 +28,35 @@ def _extract_handle(channel_url: str) -> str | None:
     return match.group(1) if match else None
 
 
-def enrich_channels(records: list[ChannelRecord], config: "Config") -> list[ChannelRecord]:
+def enrich_channels(
+    records: list[ChannelRecord],
+    config: "Config",
+    result_callback=None,
+    preloaded: dict = None,
+) -> list[ChannelRecord]:
     """
     Run email enrichment on channels with no email from Stage 0.
     Calls the Apify actor once per channel, extracts handle from URL.
+
+    Args:
+        result_callback: Optional callable(channel_url, result_dict) called
+                         after each record is processed — used for checkpointing.
+        preloaded:       Optional dict {channel_url: result_dict} of already-
+                         enriched channels to skip (loaded from checkpoint).
     """
-    to_enrich = [r for r in records if r.email is None]
+    # Apply preloaded results to matching records
+    if preloaded:
+        for record in records:
+            if record.channel_url in preloaded and record.email is None:
+                saved = preloaded[record.channel_url]
+                record.email = saved.get("email")
+                record.email_source = saved.get("email_source", record.email_source)
+                record.enrichment_status = saved.get("enrichment_status", "not_found")
+
+    to_enrich = [r for r in records if r.email is None and r.enrichment_status == "pending"]
 
     if not to_enrich:
-        print("  No channels need email enrichment (all have public emails).")
+        print("  No channels need email enrichment (all have public emails or are preloaded).")
         return records
 
     print(f"  Running email enrichment on {len(to_enrich)} channels (1 actor call each)...")
@@ -49,6 +69,12 @@ def enrich_channels(records: list[ChannelRecord], config: "Config") -> list[Chan
         if not handle:
             print(f"  [{i}/{len(to_enrich)}] Skipped {record.channel_url} — no @handle in URL")
             record.enrichment_status = "not_found"
+            if result_callback:
+                result_callback(record.channel_url, {
+                    "email": None,
+                    "email_source": record.email_source,
+                    "enrichment_status": "not_found",
+                })
             continue
 
         print(f"  [{i}/{len(to_enrich)}] Looking up {handle}...")
@@ -67,6 +93,12 @@ def enrich_channels(records: list[ChannelRecord], config: "Config") -> list[Chan
                     break
                 record.enrichment_status = "error"
                 print(f"    Actor finished with status '{status}' — skipping")
+                if result_callback:
+                    result_callback(record.channel_url, {
+                        "email": None,
+                        "email_source": record.email_source,
+                        "enrichment_status": "error",
+                    })
                 continue
 
             items = client.dataset(run["defaultDatasetId"]).list_items().items
@@ -86,6 +118,13 @@ def enrich_channels(records: list[ChannelRecord], config: "Config") -> list[Chan
                 record.enrichment_status = "not_found"
                 print(f"    No email found")
 
+            if result_callback:
+                result_callback(record.channel_url, {
+                    "email": record.email,
+                    "email_source": record.email_source,
+                    "enrichment_status": record.enrichment_status,
+                })
+
         except ApifyCreditsExhaustedError:
             print(f"\n  [!] Apify credits exhausted at channel {i}/{len(to_enrich)}.")
             print(f"      {found} email(s) found so far — continuing with partial results.")
@@ -98,6 +137,12 @@ def enrich_channels(records: list[ChannelRecord], config: "Config") -> list[Chan
                 break
             record.enrichment_status = "error"
             print(f"    Error: {e}")
+            if result_callback:
+                result_callback(record.channel_url, {
+                    "email": None,
+                    "email_source": record.email_source,
+                    "enrichment_status": "error",
+                })
 
     print(f"  Email enrichment complete: {found}/{len(to_enrich)} emails found")
     return records

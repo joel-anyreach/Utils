@@ -312,11 +312,13 @@ async def verify_batch(
     api_key: str,
     concurrency: int = 5,
     progress_callback=None,
+    result_callback=None,
 ) -> List[Dict]:
     """
     Verify a list of emails using the chosen provider.
     Returns list of partial result dicts (to be merged with Phase 1 results).
     progress_callback(done, total) called after each email completes.
+    result_callback(email, result) called after each email completes (for checkpointing).
     """
     fn = PROVIDER_VERIFY.get(provider)
     if not fn:
@@ -332,6 +334,8 @@ async def verify_batch(
             res = await fn(email, api_key, session)
             results[idx] = res
             done_count += 1
+            if result_callback:
+                result_callback(email, res)
             if progress_callback:
                 progress_callback(done_count, len(emails))
 

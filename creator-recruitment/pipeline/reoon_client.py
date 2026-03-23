@@ -41,7 +41,12 @@ class ReoonCreditsExhaustedError(Exception):
         )
 
 
-def verify_emails(records: list[ChannelRecord], api_key: str) -> list[ChannelRecord]:
+def verify_emails(
+    records: list[ChannelRecord],
+    api_key: str,
+    result_callback=None,
+    preloaded: dict = None,
+) -> list[ChannelRecord]:
     """
     Call the Reoon API for every record that has an email address.
 
@@ -49,12 +54,27 @@ def verify_emails(records: list[ChannelRecord], api_key: str) -> list[ChannelRec
     Records whose email was not reached (e.g. after credits exhausted) keep
     ``reoon_status = None`` and are treated as unblocked by the caller.
 
+    Args:
+        result_callback: Optional callable(email, reoon_status) called after
+                         each record is verified — used for checkpointing.
+        preloaded:       Optional dict {email: reoon_status} of already-verified
+                         emails to skip (loaded from checkpoint).
+
     Raises:
         ReoonCreditsExhaustedError: when the API signals no remaining credits.
                                     Already-verified records are preserved.
     """
-    to_verify = [r for r in records if r.email]
+    # Apply preloaded statuses to matching records
+    if preloaded:
+        for record in records:
+            if record.email and record.email in preloaded and record.reoon_status is None:
+                record.reoon_status = preloaded[record.email]
+
+    to_verify = [r for r in records if r.email and r.reoon_status is None]
     total = len(to_verify)
+    skipped = sum(1 for r in records if r.email and r.reoon_status is not None)
+    if skipped:
+        print(f"  Skipping {skipped} already-verified email(s) from checkpoint.")
     print(f"  Verifying {total} email(s) via Reoon...")
 
     verified_count = 0
@@ -69,6 +89,8 @@ def verify_emails(records: list[ChannelRecord], api_key: str) -> list[ChannelRec
             print(f"    [WARN] Network error verifying {record.email}: {exc}")
             record.reoon_status = "error"
             verified_count += 1
+            if result_callback:
+                result_callback(record.email, record.reoon_status)
             time.sleep(0.2)
             continue
 
@@ -99,6 +121,8 @@ def verify_emails(records: list[ChannelRecord], api_key: str) -> list[ChannelRec
 
         record.reoon_status = status
         verified_count += 1
+        if result_callback:
+            result_callback(record.email, record.reoon_status)
         time.sleep(0.2)  # ~5 req/sec — well within Reoon's limits
 
     return records

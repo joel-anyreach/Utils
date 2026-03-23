@@ -1,8 +1,8 @@
 """
 Anyreach Creator Recruitment Pipeline
 ======================================
-Fully automated: YouTube discovery → email enrichment
-                 → Google Sheets dedup + write → Instantly campaign upload
+Fully automated: YouTube discovery -> email enrichment
+                 -> Google Sheets dedup + write -> Instantly campaign upload
 
 Discovery sources (pick exactly one):
   --query         Keyword/niche search via Apify (uses Apify credits)
@@ -23,6 +23,7 @@ import csv
 import sys
 from pathlib import Path
 
+import checkpoint as ckpt
 from config import load_config
 from pipeline.apify_client import ApifyCreditsExhaustedError, discover_channels
 from pipeline.apifym_client import enrich_channels
@@ -199,11 +200,22 @@ def main() -> int:
 
     # ── Stage 1: Email enrichment ─────────────────────────────────────────────
     print("[1/3] Enriching channels via Apify email actor...")
+    channel_urls = [r.channel_url for r in records]
+    cp1 = ckpt.load(channel_urls, 1)
+    enrichment_saved = cp1["results"] if cp1 else {}
+    if enrichment_saved:
+        print(f"  [RESUME] {len(enrichment_saved)}/{len(records)} channel(s) already enriched — skipping those\n")
+
+    def on_enrich(channel_url, result):
+        enrichment_saved[channel_url] = result
+        ckpt.save(channel_urls, 1, enrichment_saved)
+
     try:
-        records = enrich_channels(records, config)
+        records = enrich_channels(records, config, result_callback=on_enrich, preloaded=enrichment_saved)
     except Exception as e:
         print(f"[ERROR] Email enrichment failed: {e}", file=sys.stderr)
         return 1
+    ckpt.clear(channel_urls, 1)
 
     apifym_found   = sum(1 for r in records if r.email_source == "apify_email")
     total_with_email = sum(1 for r in records if r.email)
@@ -254,8 +266,18 @@ def main() -> int:
             print("  [WARNING] --verify-emails set but REOON_API_KEY is missing in .env. Skipping verification.\n")
         else:
             print("[2.5/3] Verifying emails via Reoon...")
+            emails_to_verify = [r.email for r in new_records if r.email]
+            cp25 = ckpt.load(emails_to_verify, 25)
+            reoon_saved = cp25["results"] if cp25 else {}
+            if reoon_saved:
+                print(f"  [RESUME] {len(reoon_saved)}/{len(emails_to_verify)} email(s) already verified — skipping those\n")
+
+            def on_verify(email, status):
+                reoon_saved[email] = status
+                ckpt.save(emails_to_verify, 25, reoon_saved)
+
             try:
-                verify_emails(new_records, config.reoon_api_key)
+                verify_emails(new_records, config.reoon_api_key, result_callback=on_verify, preloaded=reoon_saved)
             except ReoonCreditsExhaustedError as e:
                 reoon_credits_exhausted = True
                 print(f"\n  [!] Reoon credits exhausted after {e.partial_count} verification(s).")
@@ -269,6 +291,7 @@ def main() -> int:
                 + (f" | Unverified (pass-through): {unverified}" if unverified else "")
                 + "\n"
             )
+            ckpt.clear(emails_to_verify, 25)
 
     # ── Stage 3: Instantly campaign upload ────────────────────────────────────
     print("[3/3] Uploading leads to Instantly campaign...")
@@ -308,11 +331,11 @@ def main() -> int:
         print(f"  Pushed to Instantly:            {uploaded}")
     if credits_exhausted:
         print()
-        print("  ⚡ NOTE: Apify credits ran out mid-run. Results above are partial.")
+        print("  [!] NOTE: Apify credits ran out mid-run. Results above are partial.")
         print("     Top up at https://console.apify.com/billing, then re-run.")
     if reoon_credits_exhausted:
         print()
-        print("  ⚡ NOTE: Reoon credits ran out mid-verification. Unverified emails were uploaded as-is.")
+        print("  [!] NOTE: Reoon credits ran out mid-verification. Unverified emails were uploaded as-is.")
         print("     Top up at https://reoon.com to verify the remaining emails.")
     print("=" * 45)
 

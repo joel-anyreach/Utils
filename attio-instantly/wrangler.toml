@@ -1,7 +1,8 @@
-name               = "attio-instantly-sync"
-main               = "src/worker.js"
+name            = "attio-instantly-sync"
+main            = "src/worker.js"
 compatibility_date = "2024-11-01"
+account_id      = "b718e66e86bd8141af1d06d467a690df"
 
-# Secrets — set these once via CLI (never stored in this file):
-#   wrangler secret put ATTIO_API_KEY
-#   wrangler secret put WEBHOOK_SECRET   (optional)
+# Secrets (NOT stored here — set via `wrangler secret put <NAME>`):
+#   ATTIO_API_KEY     — Attio Bearer token
+#   WEBHOOK_SECRET    — optional, validates X-Webhook-Secret header from Instantly

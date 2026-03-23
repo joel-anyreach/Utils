@@ -1,8 +1,8 @@
 """
 Anyreach Creator Recruitment Pipeline
 ======================================
-Fully automated: YouTube discovery → email enrichment
-                 → Google Sheets dedup + write → Instantly campaign upload
+Fully automated: YouTube discovery -> email enrichment
+                 -> Google Sheets dedup + write -> Instantly campaign upload
 
 Discovery sources (pick exactly one):
   --query         Keyword/niche search via Apify (uses Apify credits)
@@ -331,11 +331,11 @@ def main() -> int:
         print(f"  Pushed to Instantly:            {uploaded}")
     if credits_exhausted:
         print()
-        print("  ⚡ NOTE: Apify credits ran out mid-run. Results above are partial.")
+        print("  [!] NOTE: Apify credits ran out mid-run. Results above are partial.")
         print("     Top up at https://console.apify.com/billing, then re-run.")
     if reoon_credits_exhausted:
         print()
-        print("  ⚡ NOTE: Reoon credits ran out mid-verification. Unverified emails were uploaded as-is.")
+        print("  [!] NOTE: Reoon credits ran out mid-verification. Unverified emails were uploaded as-is.")
         print("     Top up at https://reoon.com to verify the remaining emails.")
     print("=" * 45)
 

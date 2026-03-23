@@ -134,6 +134,7 @@ def run_pipeline(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=str(PIPELINE_DIR),
+        env={**os.environ, "PYTHONUTF8": "1"},
     )
 
     log_lines: list[str] = []

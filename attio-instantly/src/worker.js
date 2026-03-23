@@ -70,7 +70,7 @@ export default {
       data: {
         type: 'object_record',
         values: {
-          ...(fullName && { name: [{ first_name: firstName || undefined, last_name: lastName || undefined, full_name: fullName }] }),
+          ...(fullName && { name: [{ first_name: firstName || '', last_name: lastName || '', full_name: fullName }] }),
           email_addresses: [{ email_address: leadEmail }],
           ...(jobTitle && { job_title: [{ value: jobTitle }] }),
           ...sharedFields,

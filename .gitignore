@@ -1,0 +1,14 @@
+credentials/*.json
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.env
+
+# Student/school data exports — contain PII, never commit
+*.csv
+*.xlsx
+BOCS/
+ICS/
+
+# Editor internals
+.claude/

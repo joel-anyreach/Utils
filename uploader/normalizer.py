@@ -44,6 +44,15 @@ def _read_csv(file_obj, encoding="utf-8") -> pd.DataFrame:
         return pd.read_csv(file_obj, encoding="latin-1", dtype=str)
 
 
+def _read_file(file_obj) -> pd.DataFrame:
+    """Read CSV or xlsx from a file-like object, auto-detecting by name attribute."""
+    name = getattr(file_obj, "name", "") or ""
+    if name.lower().endswith(".xlsx") or name.lower().endswith(".xls"):
+        raw = file_obj.read() if hasattr(file_obj, "read") else open(file_obj, "rb").read()
+        return pd.read_excel(io.BytesIO(raw), dtype=str)
+    return _read_csv(file_obj)
+
+
 def _school_name(school_id: int, field: str = "name") -> str:
     info = SCHOOL_MAP.get(school_id, {})
     return info.get(field, str(school_id))
@@ -677,30 +686,28 @@ def build_sm_recruitment_summary(apps_df: pd.DataFrame, regs_df: pd.DataFrame) -
 
 # ── HubSpot enrollment funnel ─────────────────────────────────────────────────
 
-# Output column order: FUNNEL_* → all raw HS columns → SM_Reg_* → SM_App_* → PS_*
-_HS_FUNNEL_COLS = [
-    "FUNNEL_Lead", "FUNNEL_App_or_Reg_in_SM", "FUNNEL_In_PowerSchool",
-    "FUNNEL_Currently_Enrolled", "FUNNEL_Enrollee_Type",
-]
+# Output column order: Is_*/Duplicate_Flag → all raw HS columns → SM_Reg_* → SM_App_* → PS_*
+_HS_FUNNEL_COLS = ["Is_Lead", "Is_App", "Is_Enrolled", "Duplicate_Flag"]
 _HS_SM_REG_COLS = [
-    "SM_Reg_Found", "SM_Reg_Match_Method", "SM_Reg_SchoolMint_ID",
+    "SM_Reg_Match", "SM_Reg_Match_Method", "SM_Reg_SchoolMint_ID",
     "SM_Reg_Record_ID", "SM_Reg_Student_Name", "SM_Reg_School",
     "SM_Reg_Grade", "SM_Reg_Status", "SM_Reg_Submitted_Date",
-    "SM_Reg_Status_Timestamp",
+    "SM_Reg_Created_Date", "SM_Reg_Status_Timestamp",
 ]
 _HS_SM_APP_COLS = [
-    "SM_App_Found", "SM_App_Match_Method", "SM_App_SchoolMint_ID",
+    "SM_App_Match", "SM_App_Match_Method", "SM_App_SchoolMint_ID",
     "SM_App_Application_ID", "SM_App_Record_ID", "SM_App_Student_Name",
     "SM_App_School", "SM_App_Grade", "SM_App_Status",
-    "SM_App_Submitted_Date", "SM_App_Submitted_Timestamp",
+    "SM_App_Submitted_Date", "SM_App_Created_Date", "SM_App_Decision_Date",
+    "SM_App_Submitted_Timestamp",
     "SM_App_Withdrawn", "SM_App_Withdrawn_Reason",
     "SM_App_Accepted", "SM_App_Accepted_Timestamp",
 ]
 _HS_PS_COLS = [
-    "PS_Found", "PS_Match_Method", "PS_Student_ID", "PS_Student_Number",
-    "PS_Student_Name", "PS_School_ID", "PS_Campus_ID", "PS_Grade_Level",
-    "PS_Enroll_Status_Raw", "PS_Enroll_Status", "PS_Enrollee_Type",
-    "PS_Entry_Date", "PS_Exit_Date", "PS_Entry_Code", "PS_Enrollment_Type",
+    "PS_Match", "PS_Match_Method", "PS_Student_ID", "PS_Student_Number",
+    "PS_Student_Name", "PS_School", "PS_Campus_ID", "PS_Grade",
+    "PS_Enrollment_Status", "PS_Enrollee_Type",
+    "PS_Enrollment_Date", "PS_Exit_Date", "PS_Entry_Code", "PS_Enrollment_Type",
 ]
 
 
@@ -714,11 +721,11 @@ def _ne(s) -> str:
 
 
 def _np(s) -> str:
-    """Normalize phone: digits only, min 7 digits. Returns '' otherwise."""
+    """Normalize phone: digits only, last 10 digits. Returns '' if fewer than 10 digits."""
     if s is None or s != s or str(s).strip() == "":
         return ""
     d = _re.sub(r"\D", "", str(s))
-    return d if len(d) >= 7 else ""
+    return d[-10:] if len(d) >= 10 else ""
 
 
 def _nname(last, first) -> str:
@@ -737,12 +744,15 @@ def _nname_lastfirst(lastfirst_str) -> str:
     return s.lower()
 
 
-def _build_sm_index(df: pd.DataFrame, email_col="email_guardian", phone_col="phone_guardian"):
+def _build_sm_index(df: pd.DataFrame, email_col="email_guardian", phone_col="phone_guardian",
+                    date_col="reg_status_timestamp"):
     """
     Build lookup dicts for SM data (apps or regs).
     Returns (by_email, by_phone, by_student_name) mapping normalized key → row dict.
-    First occurrence wins on duplicate keys.
+    Sorted by date descending so first occurrence = most recent record.
     """
+    if date_col in df.columns:
+        df = df.sort_values(date_col, ascending=False, na_position="last")
     by_email: dict = {}
     by_phone: dict = {}
     by_student: dict = {}
@@ -764,7 +774,10 @@ def _build_ps_index(df: pd.DataFrame):
     """
     Build lookup dicts for PS students.
     Returns (by_email, by_phone, by_student_name) mapping normalized key → row dict.
+    Sorted by entry_date descending so first occurrence = most recent record.
     """
+    if "entry_date" in df.columns:
+        df = df.sort_values("entry_date", ascending=False, na_position="last")
     by_email: dict = {}
     by_phone: dict = {}
     by_student: dict = {}
@@ -812,7 +825,7 @@ def _sm_reg_row(rd, method: str) -> dict:
         return {c: "" for c in _HS_SM_REG_COLS}
     name = f"{_s(rd.get('student_last'))}, {_s(rd.get('student_first'))}".strip(", ")
     return {
-        "SM_Reg_Found":             "Yes",
+        "SM_Reg_Match":             "Yes",
         "SM_Reg_Match_Method":      method,
         "SM_Reg_SchoolMint_ID":     _s(rd.get("student_sm_id")),
         "SM_Reg_Record_ID":         _s(rd.get("reg_id")),
@@ -821,6 +834,7 @@ def _sm_reg_row(rd, method: str) -> dict:
         "SM_Reg_Grade":             _s(rd.get("grade_label")),
         "SM_Reg_Status":            _s(rd.get("reg_status")),
         "SM_Reg_Submitted_Date":    _s(rd.get("reg_submitted")),
+        "SM_Reg_Created_Date":      _s(rd.get("reg_submitted")),
         "SM_Reg_Status_Timestamp":  _s(rd.get("reg_status_timestamp")),
     }
 
@@ -830,7 +844,7 @@ def _sm_app_row(rd, method: str) -> dict:
         return {c: "" for c in _HS_SM_APP_COLS}
     name = f"{_s(rd.get('student_last'))}, {_s(rd.get('student_first'))}".strip(", ")
     return {
-        "SM_App_Found":               "Yes",
+        "SM_App_Match":               "Yes",
         "SM_App_Match_Method":        method,
         "SM_App_SchoolMint_ID":       _s(rd.get("student_sm_id")),
         "SM_App_Application_ID":      _s(rd.get("application_id")),
@@ -840,6 +854,8 @@ def _sm_app_row(rd, method: str) -> dict:
         "SM_App_Grade":               _s(rd.get("grade_label")),
         "SM_App_Status":              _s(rd.get("app_status")),
         "SM_App_Submitted_Date":      _s(rd.get("app_submitted")),
+        "SM_App_Created_Date":        _s(rd.get("app_submitted")),
+        "SM_App_Decision_Date":       _s(rd.get("app_status_timestamp")),
         "SM_App_Submitted_Timestamp": _s(rd.get("submitted_timestamp")),
         "SM_App_Withdrawn":           _s(rd.get("withdrawn")),
         "SM_App_Withdrawn_Reason":    _s(rd.get("withdrawn_reason")),
@@ -862,22 +878,24 @@ def _ps_row(rd, method: str, reenroll_ids: set) -> dict:
         except (ValueError, TypeError):
             sid = 0
         enrollee_type = "Re-enrollee" if sid in reenroll_ids else "New Enrollee"
+    school = _s(rd.get("school_abbr") or rd.get("school_name") or rd.get("school_id"))
+    grade  = _s(rd.get("grade_label") or rd.get("grade_level"))
+    enroll_status = ENROLL_STATUS_MAP.get(status_int, _s(rd.get("enroll_status_label") or rd.get("enroll_status")))
     return {
-        "PS_Found":            "Yes",
-        "PS_Match_Method":     method,
-        "PS_Student_ID":       _s(rd.get("student_id")),
-        "PS_Student_Number":   _s(rd.get("student_number")),
-        "PS_Student_Name":     _s(rd.get("last_first")),
-        "PS_School_ID":        _s(rd.get("school_id")),
-        "PS_Campus_ID":        _s(rd.get("campus_id")),
-        "PS_Grade_Level":      _s(rd.get("grade_level")),
-        "PS_Enroll_Status_Raw": _s(rd.get("enroll_status")),
-        "PS_Enroll_Status":    _s(rd.get("enroll_status_label")),
-        "PS_Enrollee_Type":    enrollee_type,
-        "PS_Entry_Date":       _s(rd.get("entry_date")),
-        "PS_Exit_Date":        _s(rd.get("exit_date")),
-        "PS_Entry_Code":       _s(rd.get("school_entry_grade")),
-        "PS_Enrollment_Type":  _s(rd.get("enrollment_code", "")),
+        "PS_Match":             "Yes",
+        "PS_Match_Method":      method,
+        "PS_Student_ID":        _s(rd.get("student_id")),
+        "PS_Student_Number":    _s(rd.get("student_number")),
+        "PS_Student_Name":      _s(rd.get("last_first")),
+        "PS_School":            school,
+        "PS_Campus_ID":         _s(rd.get("campus_id")),
+        "PS_Grade":             grade,
+        "PS_Enrollment_Status": enroll_status,
+        "PS_Enrollee_Type":     enrollee_type,
+        "PS_Enrollment_Date":   _s(rd.get("entry_date")),
+        "PS_Exit_Date":         _s(rd.get("exit_date")),
+        "PS_Entry_Code":        _s(rd.get("school_entry_grade")),
+        "PS_Enrollment_Type":   _s(rd.get("enrollment_code", "")),
     }
 
 
@@ -885,12 +903,12 @@ def _ps_row(rd, method: str, reenroll_ids: set) -> dict:
 
 def normalize_hs_contacts(file_obj) -> tuple[pd.DataFrame, list]:
     """
-    Load a raw HubSpot contacts CSV export.
+    Load a raw HubSpot contacts CSV or xlsx export.
     Keeps ALL columns as-is — matching is done later in build_enrollment_funnel().
     Returns (df, warnings).
     """
     warnings = []
-    df = _read_csv(file_obj)
+    df = _read_file(file_obj)
     if df.empty:
         warnings.append("[HubSpot] Contacts file is empty.")
         return df, warnings
@@ -921,12 +939,12 @@ def build_enrollment_funnel(
             .dropna().astype(int).unique()
         )
 
-    # Build lookup indexes
+    # Build lookup indexes (most recent record wins — sorted desc by date in _build_*_index)
     sm_reg_email, sm_reg_phone, sm_reg_student = (
-        _build_sm_index(sm_regs_df) if not sm_regs_df.empty else ({}, {}, {})
+        _build_sm_index(sm_regs_df, date_col="reg_status_timestamp") if not sm_regs_df.empty else ({}, {}, {})
     )
     sm_app_email, sm_app_phone, sm_app_student = (
-        _build_sm_index(sm_apps_df) if not sm_apps_df.empty else ({}, {}, {})
+        _build_sm_index(sm_apps_df, date_col="app_status_timestamp") if not sm_apps_df.empty else ({}, {}, {})
     )
     ps_email, ps_phone, ps_student = (
         _build_ps_index(students_df) if not students_df.empty else ({}, {}, {})
@@ -962,14 +980,13 @@ def build_enrollment_funnel(
         sm_app_cols = _sm_app_row(sm_app_rd, sm_app_method)
         ps_cols     = _ps_row(ps_rd, ps_method, reenroll_ids)
 
-        # Derive FUNNEL_* flags
+        # Derive funnel flags
         ps_enrolled = ps_rd is not None and _s(ps_rd.get("enroll_status")) == "0"
         funnel = {
-            "FUNNEL_Lead":             "Yes",
-            "FUNNEL_App_or_Reg_in_SM": "Yes" if (sm_reg_rd or sm_app_rd) else "No",
-            "FUNNEL_In_PowerSchool":   "Yes" if ps_rd else "No",
-            "FUNNEL_Currently_Enrolled": "Yes" if ps_enrolled else "No",
-            "FUNNEL_Enrollee_Type":    ps_cols["PS_Enrollee_Type"],
+            "Is_Lead":        True,
+            "Is_App":         sm_reg_rd is not None or sm_app_rd is not None,
+            "Is_Enrolled":    ps_enrolled,
+            "Duplicate_Flag": False,  # filled in post-loop
         }
 
         out_rows.append({**funnel, **hs.to_dict(), **sm_reg_cols, **sm_app_cols, **ps_cols})
@@ -977,12 +994,21 @@ def build_enrollment_funnel(
     if not out_rows:
         return pd.DataFrame()
 
-    return pd.DataFrame(out_rows)
+    df = pd.DataFrame(out_rows)
+
+    # Post-loop: flag duplicate HS contacts that matched the same SM/PS record
+    for id_col in ["SM_Reg_Record_ID", "SM_App_Application_ID", "PS_Student_ID"]:
+        if id_col in df.columns:
+            non_empty = df[id_col] != ""
+            dups = non_empty & df[id_col].duplicated(keep=False)
+            df.loc[dups, "Duplicate_Flag"] = True
+
+    return df
 
 
 def build_hs_funnel_summary(hs_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Build the enrollment funnel summary table matching the 'Funnel Summary' sheet structure.
+    Build the enrollment funnel summary table.
     Returns DataFrame with columns: Stage, Count, % of HubSpot Leads.
     """
     n_leads = len(hs_df)
@@ -992,22 +1018,25 @@ def build_hs_funnel_summary(hs_df: pd.DataFrame) -> pd.DataFrame:
             return ""
         return round(n / n_leads, 4)  # stored as decimal; format in Sheets
 
-    sm_mask = hs_df["FUNNEL_App_or_Reg_in_SM"] == "Yes"
-    ps_mask = hs_df["FUNNEL_In_PowerSchool"] == "Yes"
-    enrolled_mask = hs_df["FUNNEL_Currently_Enrolled"] == "Yes"
+    sm_mask      = hs_df["Is_App"] == True
+    ps_mask      = hs_df["PS_Match"] == "Yes"
+    enrolled_mask = hs_df["Is_Enrolled"] == True
+    no_match_mask = (~hs_df["Is_App"]) & (hs_df["PS_Match"] != "Yes")
 
-    enrollee_type = hs_df.loc[enrolled_mask, "FUNNEL_Enrollee_Type"].str.strip().str.lower()
-    n_new = int((enrollee_type.isin(["new", "new enrollee"])).sum())
+    enrollee_type = hs_df.loc[enrolled_mask, "PS_Enrollee_Type"].str.strip().str.lower()
+    n_new      = int((enrollee_type.isin(["new", "new enrollee"])).sum())
     n_reenroll = int((enrollee_type.isin(["re-enroll", "re-enrollee", "re-enrollment", "reenroll", "reenrollee"])).sum())
     n_enrolled = int(enrolled_mask.sum())
 
     rows = [
-        {"Stage": "1. HubSpot Leads (All Contacts)",                        "Count": n_leads,              "% of HubSpot Leads": ""},
-        {"Stage": "2. SchoolMint \u2014 App or Registration found",          "Count": int(sm_mask.sum()),   "% of HubSpot Leads": pct(int(sm_mask.sum()))},
-        {"Stage": "3. PowerSchool \u2014 Any record found",                  "Count": int(ps_mask.sum()),   "% of HubSpot Leads": pct(int(ps_mask.sum()))},
-        {"Stage": "4. PowerSchool \u2014 Currently Enrolled (status = 0)",   "Count": n_enrolled,           "% of HubSpot Leads": pct(n_enrolled)},
-        {"Stage": "\u21b3 New Enrollees",                                    "Count": n_new,                "% of HubSpot Leads": pct(n_new)},
-        {"Stage": "\u21b3 Re-enrollees",                                     "Count": n_reenroll,           "% of HubSpot Leads": pct(n_reenroll)},
+        {"Stage": "1. HubSpot Leads (All Contacts)",                        "Count": n_leads,                    "% of HubSpot Leads": ""},
+        {"Stage": "2. SchoolMint \u2014 App or Registration found",          "Count": int(sm_mask.sum()),         "% of HubSpot Leads": pct(int(sm_mask.sum()))},
+        {"Stage": "3. PowerSchool \u2014 Any record found",                  "Count": int(ps_mask.sum()),         "% of HubSpot Leads": pct(int(ps_mask.sum()))},
+        {"Stage": "4. PowerSchool \u2014 Currently Enrolled (status = 0)",   "Count": n_enrolled,                 "% of HubSpot Leads": pct(n_enrolled)},
+        {"Stage": "\u21b3 New Enrollees",                                    "Count": n_new,                      "% of HubSpot Leads": pct(n_new)},
+        {"Stage": "\u21b3 Re-enrollees",                                     "Count": n_reenroll,                 "% of HubSpot Leads": pct(n_reenroll)},
+        {"Stage": "5. No match in any system",                               "Count": int(no_match_mask.sum()),   "% of HubSpot Leads": pct(int(no_match_mask.sum()))},
+        {"Stage": "Run timestamp",                                           "Count": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), "% of HubSpot Leads": ""},
     ]
     return pd.DataFrame(rows)
 
@@ -1092,9 +1121,9 @@ def normalize_all(
             hs_contacts_df = build_enrollment_funnel(
                 raw_hs_df, sm_apps_df, sm_regs_df, students_df, reenroll_df
             )
-            n_sm = int((hs_contacts_df["FUNNEL_App_or_Reg_in_SM"] == "Yes").sum())
-            n_ps = int((hs_contacts_df["FUNNEL_In_PowerSchool"] == "Yes").sum())
-            n_en = int((hs_contacts_df["FUNNEL_Currently_Enrolled"] == "Yes").sum())
+            n_sm = int(hs_contacts_df["Is_App"].sum())
+            n_ps = int((hs_contacts_df["PS_Match"] == "Yes").sum())
+            n_en = int(hs_contacts_df["Is_Enrolled"].sum())
             all_warnings.append(
                 f"[HubSpot] Funnel built: {len(hs_contacts_df):,} contacts — "
                 f"{n_sm:,} in SchoolMint, {n_ps:,} in PowerSchool, {n_en:,} currently enrolled."

@@ -120,5 +120,5 @@ SHEET_TABS = {
     "summary_sm_recruitment":          "summary_sm_recruitment",
     # HubSpot enrollment funnel
     "enrollment_funnel":               "enrollment_funnel",
-    "funnel_summary":                  "funnel_summary",
+    "enrollment_funnel_summary":       "enrollment_funnel_summary",
 }

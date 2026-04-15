@@ -95,23 +95,23 @@ col1, col2 = st.columns(2)
 with col1:
     students_file = st.file_uploader(
         "Students export (`Students_export_*.csv`)",
-        type=["csv"],
+        type=["csv", "xlsx"],
         key="students",
     )
     reenroll_file = st.file_uploader(
         "ReEnrollments export (`ReEnrollments_export_*.csv`)",
-        type=["csv"],
+        type=["csv", "xlsx"],
         key="reenroll",
     )
 with col2:
     schools_file = st.file_uploader(
         "Schools export — optional (`Schools_export*.csv`)",
-        type=["csv"],
+        type=["csv", "xlsx"],
         key="schools",
     )
     terms_file = st.file_uploader(
         "Terms export — optional (`Terms_export*.csv`)",
-        type=["csv"],
+        type=["csv", "xlsx"],
         key="terms",
     )
 
@@ -121,13 +121,13 @@ col_sm1, col_sm2 = st.columns(2)
 with col_sm1:
     sm_apps_file = st.file_uploader(
         "SchoolMint Applications export (`schoolmint applications.csv`) — optional",
-        type=["csv"],
+        type=["csv", "xlsx"],
         key="sm_apps",
     )
 with col_sm2:
     sm_regs_file = st.file_uploader(
         "SchoolMint Registrations export (`schoolmint registrations.csv`) — optional",
-        type=["csv"],
+        type=["csv", "xlsx"],
         key="sm_regs",
     )
 
@@ -137,15 +137,22 @@ if not sm_uploaded:
         "SchoolMint files not uploaded — the Recruitment Pipeline tab will be unavailable in the dashboard."
     )
 
-st.markdown("**HubSpot Contacts export** (optional — creates Enrollment Funnel & Funnel Summary tabs in the sheet):")
+st.markdown("**HubSpot Contacts export** (required for Enrollment Funnel — needs SM + PS files above):")
 
 hs_file = st.file_uploader(
-    "HubSpot Contacts export (`contacts_export*.csv`) — optional",
-    type=["csv"],
+    "HubSpot Contacts export (`contacts_export*.csv` / `.xlsx`)",
+    type=["csv", "xlsx"],
     key="hs_contacts",
 )
 hs_uploaded = hs_file is not None
-if not hs_uploaded:
+funnel_uploaded = all([hs_file, sm_apps_file, sm_regs_file])
+if hs_uploaded and not funnel_uploaded:
+    missing_funnel = [n for n, f in [("SM Applications", sm_apps_file), ("SM Registrations", sm_regs_file)] if f is None]
+    st.caption(
+        f"Enrollment Funnel requires: {', '.join(missing_funnel)}. "
+        "Upload them above to enable funnel matching."
+    )
+elif not hs_uploaded:
     st.caption(
         "HubSpot file not uploaded — the Enrollment Funnel tab will be unavailable in the dashboard."
     )
@@ -265,9 +272,9 @@ if hs_uploaded and not normalized["hs_contacts"].empty:
     ch1, ch2, ch3, ch4 = st.columns(4)
     hs_df = normalized["hs_contacts"]
     ch1.metric("HubSpot Contacts", f"{len(hs_df):,}")
-    ch2.metric("In SchoolMint", f"{int((hs_df['FUNNEL_App_or_Reg_in_SM'] == 'Yes').sum()):,}")
-    ch3.metric("In PowerSchool", f"{int((hs_df['FUNNEL_In_PowerSchool'] == 'Yes').sum()):,}")
-    ch4.metric("Currently Enrolled", f"{int((hs_df['FUNNEL_Currently_Enrolled'] == 'Yes').sum()):,}")
+    ch2.metric("In SchoolMint", f"{int(hs_df['Is_App'].sum()):,}")
+    ch3.metric("In PowerSchool", f"{int((hs_df['PS_Match'] == 'Yes').sum()):,}")
+    ch4.metric("Currently Enrolled", f"{int(hs_df['Is_Enrolled'].sum()):,}")
 
     with st.expander("Preview: HubSpot Contacts (first 10 rows)"):
         st.dataframe(hs_df.head(10), use_container_width=True)
@@ -298,7 +305,7 @@ if st.button("Push to Google Sheets", type="primary", use_container_width=True):
     if sm_uploaded:
         steps += ["raw_sm_applications", "raw_sm_registrations", "summary_sm_recruitment"]
     if hs_uploaded:
-        steps += ["enrollment_funnel", "funnel_summary"]
+        steps += ["enrollment_funnel", "enrollment_funnel_summary"]
     completed_steps = []
 
     def progress_cb(tab_name, n_rows):

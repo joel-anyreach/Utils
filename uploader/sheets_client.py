@@ -103,6 +103,46 @@ def _ensure_tab(spreadsheet, tab_name: str):
         return spreadsheet.add_worksheet(title=tab_name, rows=50000, cols=50)
 
 
+def _format_funnel_tab(ws, df: pd.DataFrame) -> None:
+    """Freeze header row and apply alternating row banding to the enrollment_funnel tab."""
+    try:
+        sheet_id = ws.id
+        n_rows = len(df) + 1
+        n_cols = len(df.columns)
+        requests = [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {"frozenRowCount": 1},
+                    },
+                    "fields": "gridProperties.frozenRowCount",
+                }
+            },
+            {
+                "addBanding": {
+                    "bandedRange": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": n_rows,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": n_cols,
+                        },
+                        "rowProperties": {
+                            "headerColor":      {"red": 0.18, "green": 0.34, "blue": 0.59},
+                            "firstBandColor":   {"red": 1.0,  "green": 1.0,  "blue": 1.0},
+                            "secondBandColor":  {"red": 0.95, "green": 0.95, "blue": 0.95},
+                        },
+                    }
+                }
+            },
+        ]
+        ws.spreadsheet.batch_update({"requests": requests})
+    except Exception:
+        pass  # formatting failure must not abort the push
+
+
 def write_tab(spreadsheet, tab_key: str, df: pd.DataFrame, progress_cb=None) -> int:
     """
     Overwrite a tab completely with the DataFrame.
@@ -117,6 +157,9 @@ def write_tab(spreadsheet, tab_key: str, df: pd.DataFrame, progress_cb=None) -> 
 
     df_clean = df.fillna("").astype(str)
     set_with_dataframe(ws, df_clean, include_index=False, resize=True)
+
+    if tab_key == "enrollment_funnel":
+        _format_funnel_tab(ws, df_clean)
 
     if progress_cb:
         progress_cb(tab_name, len(df_clean))
@@ -134,7 +177,7 @@ def append_upload_log(spreadsheet, log_row: dict):
         "upload_timestamp", "students_rows", "reenrollments_rows",
         "schools_rows", "terms_rows", "summary_enrollment_rows",
         "summary_funnel_rows", "sm_apps_rows", "sm_regs_rows",
-        "sm_recruitment_rows", "hs_contacts_rows", "hs_funnel_summary_rows",
+        "sm_recruitment_rows", "hs_contacts_rows", "enrollment_funnel_summary_rows",
         "warnings_count", "notes",
     ]
     if not existing:
@@ -195,7 +238,7 @@ def push_all_data(
     if not normalized.get("hs_contacts", pd.DataFrame()).empty:
         tab_map.append(("enrollment_funnel", normalized["hs_contacts"]))
     if not normalized.get("hs_funnel_summary", pd.DataFrame()).empty:
-        tab_map.append(("funnel_summary", normalized["hs_funnel_summary"]))
+        tab_map.append(("enrollment_funnel_summary", normalized["hs_funnel_summary"]))
 
     for tab_key, df in tab_map:
         n = write_tab(ss, tab_key, df, progress_cb=progress_cb)
@@ -213,8 +256,8 @@ def push_all_data(
         "sm_apps_rows":             len(normalized.get("sm_applications", pd.DataFrame())),
         "sm_regs_rows":             len(normalized.get("sm_registrations", pd.DataFrame())),
         "sm_recruitment_rows":      len(normalized.get("sm_recruitment", pd.DataFrame())),
-        "hs_contacts_rows":         len(normalized.get("hs_contacts", pd.DataFrame())),
-        "hs_funnel_summary_rows":   len(normalized.get("hs_funnel_summary", pd.DataFrame())),
+        "hs_contacts_rows":                    len(normalized.get("hs_contacts", pd.DataFrame())),
+        "enrollment_funnel_summary_rows":      len(normalized.get("hs_funnel_summary", pd.DataFrame())),
         "warnings_count":           len(normalized["all_warnings"]),
         "notes":                    "",
     })

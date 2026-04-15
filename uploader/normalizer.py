@@ -4,6 +4,7 @@ Cleans, joins, and derives columns for all 4 export tables.
 """
 
 import io
+import re as _re
 import pandas as pd
 from datetime import datetime
 import sys
@@ -157,6 +158,8 @@ def normalize_students(file_obj, schools_df: pd.DataFrame = None) -> tuple[pd.Da
         "SchoolEntryGradeLevel": "school_entry_grade",
         "Next_School": "next_school_id",
         "CampusID": "campus_id",
+        "GuardianEmail": "guardian_email",
+        "Home_Phone": "home_phone",
     }
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
@@ -532,6 +535,7 @@ def normalize_sm_applications(file_obj) -> tuple:
         "lottery_list",
         "reg_id", "reg_status", "reg_submitted", "reg_status_timestamp",
         "sis_export_timestamp",
+        "email_guardian", "phone_guardian",
         "is_test_row",
     ]
     for c in cols:
@@ -575,6 +579,7 @@ def normalize_sm_registrations(file_obj) -> tuple:
         "grade_applying_raw", "grade_level", "grade_label",
         "reg_id", "reg_type", "reg_status", "reg_submitted",
         "reg_status_timestamp", "sis_export_timestamp", "sm_school_id",
+        "email_guardian", "phone_guardian",
     ]
     for c in cols:
         if c not in df.columns:
@@ -672,34 +677,18 @@ def build_sm_recruitment_summary(apps_df: pd.DataFrame, regs_df: pd.DataFrame) -
 
 # ── HubSpot enrollment funnel ─────────────────────────────────────────────────
 
-# Canonical column order matching the Excel export structure
+# Output column order: FUNNEL_* → all raw HS columns → SM_Reg_* → SM_App_* → PS_*
 _HS_FUNNEL_COLS = [
     "FUNNEL_Lead", "FUNNEL_App_or_Reg_in_SM", "FUNNEL_In_PowerSchool",
     "FUNNEL_Currently_Enrolled", "FUNNEL_Enrollee_Type",
 ]
-
-_HS_CONTACT_COLS = [
-    "Record ID", "First Name", "Last Name", "Original Traffic Source",
-    "Latest Traffic Source", "Last Referring Site", "Ingenium Lead Status",
-    "Email", "Last Activity Date", "Lead Scoring (Marketing) threshold",
-    "Marketing contact status", "Create Date", "Campaign Source",
-    "Ingenium Lead Sources", "Household Language",
-    "Student #1 Recruitment Status", "Student #1 School Site Interest",
-    "Student #1 Enrollment Year", "Student #1 First Name",
-    "Student #1 Last Name", "Student #1 Grade Level",
-    "Associated Form submission", "Student #2 School Site Interest",
-    "Student #3 School Site Interest", "Phone Number", "Mobile Phone Number",
-    "Number of event completions", "Number of Pageviews", "Number of Sessions",
-    "Associated Campaign", "utm_campaign", "utm_content", "utm_medium",
-    "utm_source", "utm_term", "Email Confirmed", "CC_Tag", "fbclid", "gclid",
-    "Associated Form submission IDs", "Associated Campaign IDs",
-]
-
-_HS_SM_COLS = [
+_HS_SM_REG_COLS = [
     "SM_Reg_Found", "SM_Reg_Match_Method", "SM_Reg_SchoolMint_ID",
     "SM_Reg_Record_ID", "SM_Reg_Student_Name", "SM_Reg_School",
     "SM_Reg_Grade", "SM_Reg_Status", "SM_Reg_Submitted_Date",
     "SM_Reg_Status_Timestamp",
+]
+_HS_SM_APP_COLS = [
     "SM_App_Found", "SM_App_Match_Method", "SM_App_SchoolMint_ID",
     "SM_App_Application_ID", "SM_App_Record_ID", "SM_App_Student_Name",
     "SM_App_School", "SM_App_Grade", "SM_App_Status",
@@ -707,7 +696,6 @@ _HS_SM_COLS = [
     "SM_App_Withdrawn", "SM_App_Withdrawn_Reason",
     "SM_App_Accepted", "SM_App_Accepted_Timestamp",
 ]
-
 _HS_PS_COLS = [
     "PS_Found", "PS_Match_Method", "PS_Student_ID", "PS_Student_Number",
     "PS_Student_Name", "PS_School_ID", "PS_Campus_ID", "PS_Grade_Level",
@@ -715,58 +703,281 @@ _HS_PS_COLS = [
     "PS_Entry_Date", "PS_Exit_Date", "PS_Entry_Code", "PS_Enrollment_Type",
 ]
 
-_HS_ALL_COLS = _HS_FUNNEL_COLS + _HS_CONTACT_COLS + _HS_SM_COLS + _HS_PS_COLS
 
+# ── Matching helpers ──────────────────────────────────────────────────────────
+
+def _ne(s) -> str:
+    """Normalize email: lowercase, stripped. Returns '' for null/empty."""
+    if s is None or s != s or str(s).strip() == "":
+        return ""
+    return str(s).strip().lower()
+
+
+def _np(s) -> str:
+    """Normalize phone: digits only, min 7 digits. Returns '' otherwise."""
+    if s is None or s != s or str(s).strip() == "":
+        return ""
+    d = _re.sub(r"\D", "", str(s))
+    return d if len(d) >= 7 else ""
+
+
+def _nname(last, first) -> str:
+    """Normalized name key: 'last|first' lowercased. Returns '' if both empty."""
+    l = str(last).strip().lower() if last and last == last and str(last).strip() else ""
+    f = str(first).strip().lower() if first and first == first and str(first).strip() else ""
+    return f"{l}|{f}" if (l or f) else ""
+
+
+def _nname_lastfirst(lastfirst_str) -> str:
+    """Normalize a 'Last, First' string to 'last|first' key."""
+    s = str(lastfirst_str or "").strip()
+    if "," in s:
+        parts = s.split(",", 1)
+        return f"{parts[0].strip().lower()}|{parts[1].strip().lower()}"
+    return s.lower()
+
+
+def _build_sm_index(df: pd.DataFrame, email_col="email_guardian", phone_col="phone_guardian"):
+    """
+    Build lookup dicts for SM data (apps or regs).
+    Returns (by_email, by_phone, by_student_name) mapping normalized key → row dict.
+    First occurrence wins on duplicate keys.
+    """
+    by_email: dict = {}
+    by_phone: dict = {}
+    by_student: dict = {}
+    for _, row in df.iterrows():
+        rd = row.to_dict()
+        e = _ne(row.get(email_col, ""))
+        if e and e not in by_email:
+            by_email[e] = rd
+        p = _np(row.get(phone_col, ""))
+        if p and p not in by_phone:
+            by_phone[p] = rd
+        name = _nname(row.get("student_last", ""), row.get("student_first", ""))
+        if name and name not in by_student:
+            by_student[name] = rd
+    return by_email, by_phone, by_student
+
+
+def _build_ps_index(df: pd.DataFrame):
+    """
+    Build lookup dicts for PS students.
+    Returns (by_email, by_phone, by_student_name) mapping normalized key → row dict.
+    """
+    by_email: dict = {}
+    by_phone: dict = {}
+    by_student: dict = {}
+    for _, row in df.iterrows():
+        rd = row.to_dict()
+        e = _ne(row.get("guardian_email", ""))
+        if e and e not in by_email:
+            by_email[e] = rd
+        p = _np(row.get("home_phone", ""))
+        if p and p not in by_phone:
+            by_phone[p] = rd
+        name = _nname_lastfirst(row.get("last_first", ""))
+        if name and name not in by_student:
+            by_student[name] = rd
+    return by_email, by_phone, by_student
+
+
+def _match(by_email, by_phone, by_student,
+           hs_email, hs_phones, hs_student_name, hs_guardian_name):
+    """
+    Priority-order lookup. Returns (row_dict_or_None, method_string).
+    Priority: 1=Email, 2=Phone/Mobile, 3=Student name, 4=Guardian name fallback.
+    """
+    if hs_email and hs_email in by_email:
+        return by_email[hs_email], "Email"
+    for ph in hs_phones:
+        if ph and ph in by_phone:
+            return by_phone[ph], "Phone"
+    if hs_student_name and hs_student_name in by_student:
+        return by_student[hs_student_name], "Student Name"
+    if hs_guardian_name and hs_guardian_name in by_student:
+        return by_student[hs_guardian_name], "Guardian Name"
+    return None, ""
+
+
+def _s(v) -> str:
+    """Safe stringify: returns '' for None/NaN."""
+    if v is None or v != v:
+        return ""
+    return str(v)
+
+
+def _sm_reg_row(rd, method: str) -> dict:
+    if rd is None:
+        return {c: "" for c in _HS_SM_REG_COLS}
+    name = f"{_s(rd.get('student_last'))}, {_s(rd.get('student_first'))}".strip(", ")
+    return {
+        "SM_Reg_Found":             "Yes",
+        "SM_Reg_Match_Method":      method,
+        "SM_Reg_SchoolMint_ID":     _s(rd.get("student_sm_id")),
+        "SM_Reg_Record_ID":         _s(rd.get("reg_id")),
+        "SM_Reg_Student_Name":      name,
+        "SM_Reg_School":            _s(rd.get("school_abbr")),
+        "SM_Reg_Grade":             _s(rd.get("grade_label")),
+        "SM_Reg_Status":            _s(rd.get("reg_status")),
+        "SM_Reg_Submitted_Date":    _s(rd.get("reg_submitted")),
+        "SM_Reg_Status_Timestamp":  _s(rd.get("reg_status_timestamp")),
+    }
+
+
+def _sm_app_row(rd, method: str) -> dict:
+    if rd is None:
+        return {c: "" for c in _HS_SM_APP_COLS}
+    name = f"{_s(rd.get('student_last'))}, {_s(rd.get('student_first'))}".strip(", ")
+    return {
+        "SM_App_Found":               "Yes",
+        "SM_App_Match_Method":        method,
+        "SM_App_SchoolMint_ID":       _s(rd.get("student_sm_id")),
+        "SM_App_Application_ID":      _s(rd.get("application_id")),
+        "SM_App_Record_ID":           _s(rd.get("lottery_id")),
+        "SM_App_Student_Name":        name,
+        "SM_App_School":              _s(rd.get("school_abbr")),
+        "SM_App_Grade":               _s(rd.get("grade_label")),
+        "SM_App_Status":              _s(rd.get("app_status")),
+        "SM_App_Submitted_Date":      _s(rd.get("app_submitted")),
+        "SM_App_Submitted_Timestamp": _s(rd.get("submitted_timestamp")),
+        "SM_App_Withdrawn":           _s(rd.get("withdrawn")),
+        "SM_App_Withdrawn_Reason":    _s(rd.get("withdrawn_reason")),
+        "SM_App_Accepted":            _s(rd.get("accepted")),
+        "SM_App_Accepted_Timestamp":  _s(rd.get("timestamp_accepted")),
+    }
+
+
+def _ps_row(rd, method: str, reenroll_ids: set) -> dict:
+    if rd is None:
+        return {c: "" for c in _HS_PS_COLS}
+    try:
+        status_int = int(float(_s(rd.get("enroll_status", ""))))
+    except (ValueError, TypeError):
+        status_int = -99
+    enrollee_type = ""
+    if status_int == 0:
+        try:
+            sid = int(float(_s(rd.get("student_id", 0))))
+        except (ValueError, TypeError):
+            sid = 0
+        enrollee_type = "Re-enrollee" if sid in reenroll_ids else "New Enrollee"
+    return {
+        "PS_Found":            "Yes",
+        "PS_Match_Method":     method,
+        "PS_Student_ID":       _s(rd.get("student_id")),
+        "PS_Student_Number":   _s(rd.get("student_number")),
+        "PS_Student_Name":     _s(rd.get("last_first")),
+        "PS_School_ID":        _s(rd.get("school_id")),
+        "PS_Campus_ID":        _s(rd.get("campus_id")),
+        "PS_Grade_Level":      _s(rd.get("grade_level")),
+        "PS_Enroll_Status_Raw": _s(rd.get("enroll_status")),
+        "PS_Enroll_Status":    _s(rd.get("enroll_status_label")),
+        "PS_Enrollee_Type":    enrollee_type,
+        "PS_Entry_Date":       _s(rd.get("entry_date")),
+        "PS_Exit_Date":        _s(rd.get("exit_date")),
+        "PS_Entry_Code":       _s(rd.get("school_entry_grade")),
+        "PS_Enrollment_Type":  _s(rd.get("enrollment_code", "")),
+    }
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def normalize_hs_contacts(file_obj) -> tuple[pd.DataFrame, list]:
     """
-    Normalize a HubSpot contacts CSV export.
-    Keeps original column names to match the Excel enrollment funnel structure.
-    Derives/corrects FUNNEL_* flags from SM_*/PS_* columns when present.
+    Load a raw HubSpot contacts CSV export.
+    Keeps ALL columns as-is — matching is done later in build_enrollment_funnel().
     Returns (df, warnings).
     """
     warnings = []
     df = _read_csv(file_obj)
-
     if df.empty:
-        warnings.append("HubSpot contacts file is empty.")
+        warnings.append("[HubSpot] Contacts file is empty.")
         return df, warnings
-
-    # Ensure every expected column exists (fill missing with "")
-    for col in _HS_ALL_COLS:
-        if col not in df.columns:
-            df[col] = ""
-
-    # Re-derive FUNNEL_* columns from SM/PS data for consistency
-    sm_reg_yes = df["SM_Reg_Found"].str.strip().str.upper() == "YES"
-    sm_app_yes = df["SM_App_Found"].str.strip().str.upper() == "YES"
-    ps_yes = df["PS_Found"].str.strip().str.upper() == "YES"
-    ps_active = df["PS_Enroll_Status"].str.strip().str.lower() == "active"
-
-    df["FUNNEL_Lead"] = "Yes"
-    df["FUNNEL_App_or_Reg_in_SM"] = (sm_reg_yes | sm_app_yes).map({True: "Yes", False: "No"})
-    df["FUNNEL_In_PowerSchool"] = ps_yes.map({True: "Yes", False: "No"})
-    df["FUNNEL_Currently_Enrolled"] = ps_active.map({True: "Yes", False: "No"})
-    # FUNNEL_Enrollee_Type: keep existing value if present, else derive from PS_Enrollee_Type
-    df["FUNNEL_Enrollee_Type"] = df["PS_Enrollee_Type"].fillna("").where(
-        df["PS_Enrollee_Type"].fillna("") != "", df["FUNNEL_Enrollee_Type"].fillna("")
-    )
-
-    # Enforce canonical column order; append any extra columns from the export at the end
-    extra_cols = [c for c in df.columns if c not in _HS_ALL_COLS]
-    ordered = [c for c in _HS_ALL_COLS if c in df.columns] + extra_cols
-    df = df[ordered]
-
-    n_total = len(df)
-    n_sm = int((df["FUNNEL_App_or_Reg_in_SM"] == "Yes").sum())
-    n_ps = int((df["FUNNEL_In_PowerSchool"] == "Yes").sum())
-    n_enrolled = int((df["FUNNEL_Currently_Enrolled"] == "Yes").sum())
-    warnings.append(
-        f"[HubSpot] {n_total:,} contacts — {n_sm:,} in SchoolMint, "
-        f"{n_ps:,} in PowerSchool, {n_enrolled:,} currently enrolled."
-    )
-
+    warnings.append(f"[HubSpot] {len(df):,} contacts loaded.")
     return df, warnings
+
+
+def build_enrollment_funnel(
+    hs_df: pd.DataFrame,
+    sm_apps_df: pd.DataFrame,
+    sm_regs_df: pd.DataFrame,
+    students_df: pd.DataFrame,
+    reenroll_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Reconcile HubSpot contacts against SchoolMint and PowerSchool.
+    For each HS contact, match to SM registrations, SM applications, and PS students
+    using 4-priority matching: Email → Phone/Mobile → Student Name → Guardian Name.
+
+    Returns one row per HS contact with:
+      FUNNEL_* flags | all raw HS columns | SM_Reg_* | SM_App_* | PS_*
+    """
+    # Set of student IDs with any reenrollment record (for New vs Re-enrollee)
+    reenroll_ids: set = set()
+    if not reenroll_df.empty and "student_id" in reenroll_df.columns:
+        reenroll_ids = set(
+            pd.to_numeric(reenroll_df["student_id"], errors="coerce")
+            .dropna().astype(int).unique()
+        )
+
+    # Build lookup indexes
+    sm_reg_email, sm_reg_phone, sm_reg_student = (
+        _build_sm_index(sm_regs_df) if not sm_regs_df.empty else ({}, {}, {})
+    )
+    sm_app_email, sm_app_phone, sm_app_student = (
+        _build_sm_index(sm_apps_df) if not sm_apps_df.empty else ({}, {}, {})
+    )
+    ps_email, ps_phone, ps_student = (
+        _build_ps_index(students_df) if not students_df.empty else ({}, {}, {})
+    )
+
+    out_rows = []
+    for _, hs in hs_df.iterrows():
+        # Extract HS matching keys
+        hs_email   = _ne(hs.get("Email"))
+        hs_phone   = _np(hs.get("Phone Number"))
+        hs_mobile  = _np(hs.get("Mobile Phone Number"))
+        hs_phones  = [p for p in [hs_phone, hs_mobile] if p]
+
+        hs_s_name  = _nname(hs.get("Student #1 Last Name"), hs.get("Student #1 First Name"))
+        hs_g_name  = _nname(hs.get("Last Name"), hs.get("First Name"))
+
+        # Match each system
+        sm_reg_rd, sm_reg_method = _match(
+            sm_reg_email, sm_reg_phone, sm_reg_student,
+            hs_email, hs_phones, hs_s_name, hs_g_name,
+        )
+        sm_app_rd, sm_app_method = _match(
+            sm_app_email, sm_app_phone, sm_app_student,
+            hs_email, hs_phones, hs_s_name, hs_g_name,
+        )
+        ps_rd, ps_method = _match(
+            ps_email, ps_phone, ps_student,
+            hs_email, hs_phones, hs_s_name, hs_g_name,
+        )
+
+        # Build output sections
+        sm_reg_cols = _sm_reg_row(sm_reg_rd, sm_reg_method)
+        sm_app_cols = _sm_app_row(sm_app_rd, sm_app_method)
+        ps_cols     = _ps_row(ps_rd, ps_method, reenroll_ids)
+
+        # Derive FUNNEL_* flags
+        ps_enrolled = ps_rd is not None and _s(ps_rd.get("enroll_status")) == "0"
+        funnel = {
+            "FUNNEL_Lead":             "Yes",
+            "FUNNEL_App_or_Reg_in_SM": "Yes" if (sm_reg_rd or sm_app_rd) else "No",
+            "FUNNEL_In_PowerSchool":   "Yes" if ps_rd else "No",
+            "FUNNEL_Currently_Enrolled": "Yes" if ps_enrolled else "No",
+            "FUNNEL_Enrollee_Type":    ps_cols["PS_Enrollee_Type"],
+        }
+
+        out_rows.append({**funnel, **hs.to_dict(), **sm_reg_cols, **sm_app_cols, **ps_cols})
+
+    if not out_rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame(out_rows)
 
 
 def build_hs_funnel_summary(hs_df: pd.DataFrame) -> pd.DataFrame:
@@ -870,14 +1081,24 @@ def normalize_all(
     if not sm_apps_df.empty or not sm_regs_df.empty:
         sm_recruitment_df = build_sm_recruitment_summary(sm_apps_df, sm_regs_df)
 
-    # HubSpot (optional)
+    # HubSpot (optional) — match against SM and PS data already normalized above
     hs_contacts_df = pd.DataFrame()
     hs_funnel_summary_df = pd.DataFrame()
 
     if hs_contacts_file is not None:
-        hs_contacts_df, w = normalize_hs_contacts(hs_contacts_file)
+        raw_hs_df, w = normalize_hs_contacts(hs_contacts_file)
         all_warnings.extend(w)
-        if not hs_contacts_df.empty:
+        if not raw_hs_df.empty:
+            hs_contacts_df = build_enrollment_funnel(
+                raw_hs_df, sm_apps_df, sm_regs_df, students_df, reenroll_df
+            )
+            n_sm = int((hs_contacts_df["FUNNEL_App_or_Reg_in_SM"] == "Yes").sum())
+            n_ps = int((hs_contacts_df["FUNNEL_In_PowerSchool"] == "Yes").sum())
+            n_en = int((hs_contacts_df["FUNNEL_Currently_Enrolled"] == "Yes").sum())
+            all_warnings.append(
+                f"[HubSpot] Funnel built: {len(hs_contacts_df):,} contacts — "
+                f"{n_sm:,} in SchoolMint, {n_ps:,} in PowerSchool, {n_en:,} currently enrolled."
+            )
             hs_funnel_summary_df = build_hs_funnel_summary(hs_contacts_df)
 
     return {

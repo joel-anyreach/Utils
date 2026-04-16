@@ -167,6 +167,59 @@ def write_tab(spreadsheet, tab_key: str, df: pd.DataFrame, progress_cb=None) -> 
     return len(df_clean)
 
 
+def upsert_tab(
+    spreadsheet,
+    tab_key: str,
+    df: pd.DataFrame,
+    pk_col: str,
+    progress_cb=None,
+) -> int:
+    """
+    Upsert a tab: existing rows whose pk_col value matches incoming rows are
+    replaced; rows with new pk_col values are appended.
+    Falls back to full overwrite if the tab is empty or pk_col is absent.
+    Returns total rows in tab after write.
+    """
+    from gspread_dataframe import get_as_dataframe, set_with_dataframe
+
+    tab_name = SHEET_TABS.get(tab_key, tab_key)
+    ws = _ensure_tab(spreadsheet, tab_name)
+
+    try:
+        existing = get_as_dataframe(ws, evaluate_formulas=False, dtype=str)
+        existing = existing.dropna(how="all").dropna(axis=1, how="all")
+    except Exception:
+        existing = pd.DataFrame()
+
+    df_clean = df.fillna("").astype(str)
+
+    if existing.empty or pk_col not in existing.columns:
+        ws.clear()
+        set_with_dataframe(ws, df_clean, include_index=False, resize=True)
+        result = df_clean
+    else:
+        # Align columns: add any new cols to existing, keep extra existing cols at end
+        for col in df_clean.columns:
+            if col not in existing.columns:
+                existing[col] = ""
+        extra_cols = [c for c in existing.columns if c not in df_clean.columns]
+        existing = existing[list(df_clean.columns) + extra_cols]
+
+        incoming_keys = set(df_clean[pk_col].unique())
+        existing_filtered = existing[~existing[pk_col].isin(incoming_keys)]
+        result = pd.concat([existing_filtered, df_clean], ignore_index=True)
+
+        ws.clear()
+        set_with_dataframe(ws, result, include_index=False, resize=True)
+
+    if tab_key == "enrollment_funnel":
+        _format_funnel_tab(ws, result)
+
+    if progress_cb:
+        progress_cb(tab_name, len(result))
+    return len(result)
+
+
 def append_upload_log(spreadsheet, log_row: dict):
     """Append one row to the upload_log tab (never overwrites)."""
     tab_name = SHEET_TABS["upload_log"]
@@ -226,17 +279,23 @@ def push_all_data(
         ("summary_funnel_current",   normalized["summary_funnel"]),
     ]
 
-    # Conditionally add SchoolMint tabs if data was provided
+    # SchoolMint tabs — upsert so records accumulate across uploads
     if not normalized.get("sm_applications", pd.DataFrame()).empty:
-        tab_map.append(("raw_sm_applications", normalized["sm_applications"]))
+        n = upsert_tab(ss, "raw_sm_applications", normalized["sm_applications"],
+                       pk_col="application_id", progress_cb=progress_cb)
+        results["tabs_written"][SHEET_TABS["raw_sm_applications"]] = n
     if not normalized.get("sm_registrations", pd.DataFrame()).empty:
-        tab_map.append(("raw_sm_registrations", normalized["sm_registrations"]))
+        n = upsert_tab(ss, "raw_sm_registrations", normalized["sm_registrations"],
+                       pk_col="reg_id", progress_cb=progress_cb)
+        results["tabs_written"][SHEET_TABS["raw_sm_registrations"]] = n
     if not normalized.get("sm_recruitment", pd.DataFrame()).empty:
         tab_map.append(("summary_sm_recruitment", normalized["sm_recruitment"]))
 
-    # Conditionally add HubSpot tabs if data was provided
+    # HubSpot enrollment funnel — upsert by Record ID
     if not normalized.get("hs_contacts", pd.DataFrame()).empty:
-        tab_map.append(("enrollment_funnel", normalized["hs_contacts"]))
+        n = upsert_tab(ss, "enrollment_funnel", normalized["hs_contacts"],
+                       pk_col="Record ID", progress_cb=progress_cb)
+        results["tabs_written"][SHEET_TABS["enrollment_funnel"]] = n
     if not normalized.get("hs_funnel_summary", pd.DataFrame()).empty:
         tab_map.append(("enrollment_funnel_summary", normalized["hs_funnel_summary"]))
 

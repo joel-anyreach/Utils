@@ -601,9 +601,13 @@ def normalize_sm_registrations(file_obj) -> tuple:
 def build_sm_recruitment_summary(apps_df: pd.DataFrame, regs_df: pd.DataFrame) -> pd.DataFrame:
     """
     Build per school_abbr × grade_level recruitment funnel summary.
-    Columns: school_abbr, school_id, grade_level, grade_label,
+    Columns: school_year, school_abbr, school_id, grade_level, grade_label,
              leads, apps_submitted, reg_submitted, reg_approved.
     """
+    today = datetime.today()
+    next_sy = (today.year if today.month >= 8 else today.year - 1) + 1
+    school_year = f"{next_sy}-{next_sy + 1}"
+
     key = ["school_abbr", "grade_level"]
 
     # --- Leads: unique students per school×grade (non-test rows) ---
@@ -677,13 +681,14 @@ def build_sm_recruitment_summary(apps_df: pd.DataFrame, regs_df: pd.DataFrame) -
     summary["grade_label"] = summary["grade_level"].map(
         lambda g: GRADE_LABEL_MAP.get(g, "Unknown") if g != -99 else "Unknown"
     )
+    summary["school_year"] = school_year
 
     # Sort
     grade_order = {g: i for i, g in enumerate(GRADE_SORT_ORDER + [-99])}
     summary["_sort"] = summary["grade_level"].map(grade_order).fillna(99)
     summary = summary.sort_values(["school_abbr", "_sort"]).drop(columns=["_sort"])
 
-    cols = ["school_abbr", "school_id", "grade_level", "grade_label",
+    cols = ["school_year", "school_abbr", "school_id", "grade_level", "grade_label",
             "leads", "apps_submitted", "reg_submitted", "reg_approved"]
     for c in cols:
         if c not in summary.columns:
@@ -1055,6 +1060,7 @@ def normalize_all(
     sm_applications_file=None,
     sm_registrations_file=None,
     hs_contacts_file=None,
+    existing_funnel_df=None,
 ) -> dict:
     """
     Run all normalizers and build summaries.
@@ -1121,21 +1127,37 @@ def normalize_all(
     hs_contacts_df = pd.DataFrame()
     hs_funnel_summary_df = pd.DataFrame()
 
+    # Columns added by build_enrollment_funnel (not raw HS data)
+    _derived_cols = set(
+        _HS_FUNNEL_COLS + _HS_SM_REG_COLS + _HS_SM_APP_COLS + _HS_PS_COLS
+    )
+
+    raw_hs_df = pd.DataFrame()
     if hs_contacts_file is not None:
         raw_hs_df, w = normalize_hs_contacts(hs_contacts_file)
         all_warnings.extend(w)
-        if not raw_hs_df.empty:
-            hs_contacts_df = build_enrollment_funnel(
-                raw_hs_df, sm_apps_df, sm_regs_df, students_df, reenroll_df
-            )
-            n_sm = int(hs_contacts_df["Is_App"].sum())
-            n_ps = int((hs_contacts_df["PS_Match"] == "Yes").sum())
-            n_en = int(hs_contacts_df["Is_Enrolled"].sum())
-            all_warnings.append(
-                f"[HubSpot] Funnel built: {len(hs_contacts_df):,} contacts — "
-                f"{n_sm:,} in SchoolMint, {n_ps:,} in PowerSchool, {n_en:,} currently enrolled."
-            )
-            hs_funnel_summary_df = build_hs_funnel_summary(hs_contacts_df)
+    elif existing_funnel_df is not None and not existing_funnel_df.empty:
+        # Re-use stored HS contact rows; strip derived match columns so they
+        # are re-computed against the latest PS/SM data
+        hs_cols = [c for c in existing_funnel_df.columns if c not in _derived_cols]
+        raw_hs_df = existing_funnel_df[hs_cols].copy()
+        all_warnings.append(
+            f"[HubSpot] No new file — refreshing match columns for "
+            f"{len(raw_hs_df):,} existing contacts using updated PS/SM data."
+        )
+
+    if not raw_hs_df.empty:
+        hs_contacts_df = build_enrollment_funnel(
+            raw_hs_df, sm_apps_df, sm_regs_df, students_df, reenroll_df
+        )
+        n_sm = int(hs_contacts_df["Is_App"].sum())
+        n_ps = int((hs_contacts_df["PS_Match"] == "Yes").sum())
+        n_en = int(hs_contacts_df["Is_Enrolled"].sum())
+        all_warnings.append(
+            f"[HubSpot] Funnel built: {len(hs_contacts_df):,} contacts — "
+            f"{n_sm:,} in SchoolMint, {n_ps:,} in PowerSchool, {n_en:,} currently enrolled."
+        )
+        hs_funnel_summary_df = build_hs_funnel_summary(hs_contacts_df)
 
     return {
         "students": students_df,

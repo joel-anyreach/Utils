@@ -154,7 +154,8 @@ if hs_uploaded and not funnel_uploaded:
     )
 elif not hs_uploaded:
     st.caption(
-        "HubSpot file not uploaded — the Enrollment Funnel tab will be unavailable in the dashboard."
+        "HubSpot file not uploaded — if the Enrollment Funnel tab already exists in your Sheet, "
+        "match columns will be refreshed automatically using the latest PS/SM data."
     )
 
 st.markdown("---")
@@ -182,17 +183,20 @@ if not all_uploaded:
 st.markdown("---")
 st.markdown("## Step 2 — Validate & Preview")
 
-# Fetch existing schools/terms from Google Sheet when the files weren't uploaded
+# Fetch existing schools/terms/funnel from Google Sheet when the files weren't uploaded
 existing_schools_df = pd.DataFrame()
 existing_terms_df = pd.DataFrame()
-if sheet_input.strip() and (schools_file is None or terms_file is None):
-    with st.spinner("Fetching existing schools/terms from Google Sheet…"):
+existing_funnel_df = pd.DataFrame()
+if sheet_input.strip():
+    with st.spinner("Fetching existing data from Google Sheet…"):
         if schools_file is None:
             existing_schools_df = sc.read_tab(sheet_input.strip(), SHEET_TABS["raw_schools"])
             if existing_schools_df.empty:
                 st.caption("ℹ️ No existing schools data found in Sheet — school names will use built-in constants.")
         if terms_file is None:
             existing_terms_df = sc.read_tab(sheet_input.strip(), SHEET_TABS["raw_terms"])
+        if hs_file is None:
+            existing_funnel_df = sc.read_tab(sheet_input.strip(), SHEET_TABS["enrollment_funnel"])
 
 with st.spinner("Parsing and normalizing data..."):
     try:
@@ -205,6 +209,7 @@ with st.spinner("Parsing and normalizing data..."):
             sm_applications_file=sm_apps_file,
             sm_registrations_file=sm_regs_file,
             hs_contacts_file=hs_file,
+            existing_funnel_df=existing_funnel_df,
         )
     except Exception as e:
         st.error(f"**Error during normalization:** {e}")
@@ -268,7 +273,7 @@ if sm_uploaded and not normalized["sm_recruitment"].empty:
     with st.expander("Preview: Recruitment Pipeline Summary"):
         st.dataframe(normalized["sm_recruitment"], use_container_width=True)
 
-if hs_uploaded and not normalized["hs_contacts"].empty:
+if not normalized["hs_contacts"].empty:
     ch1, ch2, ch3, ch4 = st.columns(4)
     hs_df = normalized["hs_contacts"]
     ch1.metric("HubSpot Contacts", f"{len(hs_df):,}")
@@ -304,7 +309,7 @@ if st.button("Push to Google Sheets", type="primary", use_container_width=True):
     ]
     if sm_uploaded:
         steps += ["raw_sm_applications", "raw_sm_registrations", "summary_sm_recruitment"]
-    if hs_uploaded:
+    if hs_uploaded or not existing_funnel_df.empty:
         steps += ["enrollment_funnel", "enrollment_funnel_summary"]
     completed_steps = []
 

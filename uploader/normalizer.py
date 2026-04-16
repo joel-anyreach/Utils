@@ -534,6 +534,7 @@ def normalize_sm_applications(file_obj) -> tuple:
 
     # Canonical column order
     cols = [
+        "school_year",
         "student_sm_id", "student_last", "student_first",
         "school_abbr", "school_id",
         "grade_applying_raw", "grade_level", "grade_label",
@@ -583,6 +584,7 @@ def normalize_sm_registrations(file_obj) -> tuple:
     df["grade_label"] = df["grade_level"].map(lambda g: GRADE_LABEL_MAP.get(g, "Unknown") if g != -99 else "Unknown")
 
     cols = [
+        "school_year",
         "student_sm_id", "student_last", "student_first",
         "school_abbr", "school_id",
         "grade_applying_raw", "grade_level", "grade_label",
@@ -604,9 +606,19 @@ def build_sm_recruitment_summary(apps_df: pd.DataFrame, regs_df: pd.DataFrame) -
     Columns: school_year, school_abbr, school_id, grade_level, grade_label,
              leads, apps_submitted, reg_submitted, reg_approved.
     """
-    today = datetime.today()
-    next_sy = (today.year if today.month >= 8 else today.year - 1) + 1
-    school_year = f"{next_sy}-{next_sy + 1}"
+    # Prefer school_year from the data; fall back to deriving from today's date
+    school_year = ""
+    for src in [apps_df, regs_df]:
+        if not src.empty and "school_year" in src.columns:
+            val = src["school_year"].dropna()
+            val = val[val.astype(str).str.strip() != ""]
+            if not val.empty:
+                school_year = str(val.iloc[0]).strip()
+                break
+    if not school_year:
+        today = datetime.today()
+        next_sy = (today.year if today.month >= 8 else today.year - 1) + 1
+        school_year = f"{next_sy}-{next_sy + 1}"
 
     key = ["school_abbr", "grade_level"]
 

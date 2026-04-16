@@ -666,10 +666,19 @@ def sm_monthly_apps_chart(pace_df: pd.DataFrame) -> go.Figure:
         hovertemplate="Cumulative: %{y:,}<extra></extra>",
     ))
 
+    month_order = (
+        pace_df[["month_date", "month_label"]].drop_duplicates()
+        .sort_values("month_date")["month_label"].tolist()
+    )
+
     fig.update_layout(
         title="Monthly Applications Submitted",
         barmode="stack",
-        xaxis_title="Month",
+        xaxis=dict(
+            title="Month",
+            categoryorder="array",
+            categoryarray=month_order,
+        ),
         yaxis_title="Applications",
         yaxis2=dict(
             title="Cumulative",

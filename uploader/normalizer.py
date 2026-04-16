@@ -637,18 +637,25 @@ def build_sm_recruitment_summary(apps_df: pd.DataFrame, regs_df: pd.DataFrame) -
         .reset_index(name="apps_submitted")
     )
 
-    # --- Reg submitted / approved from registrations ---
-    if not regs_df.empty and "grade_level" in regs_df.columns:
-        regs = regs_df.copy()
-        regs["grade_level"] = pd.to_numeric(regs["grade_level"], errors="coerce").fillna(-99).astype(int)
-
-        if "reg_submitted" in regs.columns:
-            reg_sub_df = regs[regs["reg_submitted"] == "Submitted"].groupby(key).size().reset_index(name="reg_submitted")
+    # --- Reg submitted / approved from applications embedded registration columns ---
+    # The applications CSV embeds registration data via .1 duplicate columns
+    # (renamed to reg_submitted / reg_status by _SM_APPS_RENAME), which use
+    # confirmed values "Submitted" / "Approved". The standalone regs file may
+    # lack a `submitted` column entirely, so apps_clean is the reliable source.
+    if not apps_clean.empty:
+        if "reg_submitted" in apps_clean.columns:
+            reg_sub_df = (
+                apps_clean[apps_clean["reg_submitted"] == "Submitted"]
+                .groupby(key).size().reset_index(name="reg_submitted")
+            )
         else:
             reg_sub_df = pd.DataFrame(columns=key + ["reg_submitted"])
 
-        if "reg_status" in regs.columns:
-            reg_app_df = regs[regs["reg_status"] == "Approved"].groupby(key).size().reset_index(name="reg_approved")
+        if "reg_status" in apps_clean.columns:
+            reg_app_df = (
+                apps_clean[apps_clean["reg_status"] == "Approved"]
+                .groupby(key).size().reset_index(name="reg_approved")
+            )
         else:
             reg_app_df = pd.DataFrame(columns=key + ["reg_approved"])
     else:

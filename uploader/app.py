@@ -5,6 +5,7 @@ Upload 4 PowerSchool CSV exports → normalize → push to Google Sheets
 
 import sys
 import os
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 
@@ -131,6 +132,20 @@ with col_sm2:
         key="sm_regs",
     )
 
+_today = datetime.today()
+_cur_sy = _today.year if _today.month >= 8 else _today.year - 1
+_sy_options = [f"{y}-{y+1}" for y in range(_cur_sy - 2, _cur_sy + 3)]
+_default_sy = f"{_cur_sy + 1}-{_cur_sy + 2}"
+
+sm_school_year = st.selectbox(
+    "School year for this SchoolMint upload",
+    options=_sy_options,
+    index=_sy_options.index(_default_sy),
+    key="sm_school_year",
+    help="Stamps this school year on every row in the SM raw tabs and recruitment summary. "
+         "Overrides the school_year column in the CSV if present.",
+)
+
 sm_uploaded = sm_apps_file is not None or sm_regs_file is not None
 if not sm_uploaded:
     st.caption(
@@ -208,6 +223,7 @@ with st.spinner("Parsing and normalizing data..."):
             existing_terms_df=existing_terms_df,
             sm_applications_file=sm_apps_file,
             sm_registrations_file=sm_regs_file,
+            sm_school_year=sm_school_year,
             hs_contacts_file=hs_file,
             existing_funnel_df=existing_funnel_df,
         )

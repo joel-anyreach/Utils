@@ -491,11 +491,13 @@ def _sm_grade_level(grade_series: pd.Series, warnings: list, context: str) -> pd
     return mapped.fillna(-99).astype(int)
 
 
-def normalize_sm_applications(file_obj) -> tuple:
+def normalize_sm_applications(file_obj, school_year: str = "") -> tuple:
     """
     Normalize SchoolMint applications CSV export.
     Returns (df, warnings).
     The CSV has duplicate column headers; pandas auto-suffixes them with '.1'.
+    If school_year is provided it is stamped onto every row, overriding any
+    school_year column in the CSV.
     """
     warnings = []
     df = _read_csv(file_obj)
@@ -532,6 +534,9 @@ def normalize_sm_applications(file_obj) -> tuple:
     df["grade_level"] = _sm_grade_level(df["grade_applying_raw"], warnings, "applications.csv")
     df["grade_label"] = df["grade_level"].map(lambda g: GRADE_LABEL_MAP.get(g, "Unknown") if g != -99 else "Unknown")
 
+    if school_year:
+        df["school_year"] = school_year
+
     # Canonical column order
     cols = [
         "school_year",
@@ -556,10 +561,12 @@ def normalize_sm_applications(file_obj) -> tuple:
     return df, warnings
 
 
-def normalize_sm_registrations(file_obj) -> tuple:
+def normalize_sm_registrations(file_obj, school_year: str = "") -> tuple:
     """
     Normalize SchoolMint registrations CSV export.
     Returns (df, warnings).
+    If school_year is provided it is stamped onto every row, overriding any
+    school_year column in the CSV.
     """
     warnings = []
     df = _read_csv(file_obj)
@@ -582,6 +589,9 @@ def normalize_sm_registrations(file_obj) -> tuple:
     df["school_id"] = _sm_school_id(df["school_abbr"])
     df["grade_level"] = _sm_grade_level(df["grade_applying_raw"], warnings, "registrations.csv")
     df["grade_label"] = df["grade_level"].map(lambda g: GRADE_LABEL_MAP.get(g, "Unknown") if g != -99 else "Unknown")
+
+    if school_year:
+        df["school_year"] = school_year
 
     cols = [
         "school_year",
@@ -1071,6 +1081,7 @@ def normalize_all(
     existing_schools_df=None, existing_terms_df=None,
     sm_applications_file=None,
     sm_registrations_file=None,
+    sm_school_year: str = "",
     hs_contacts_file=None,
     existing_funnel_df=None,
 ) -> dict:
@@ -1125,11 +1136,11 @@ def normalize_all(
     sm_recruitment_df = pd.DataFrame()
 
     if sm_applications_file is not None:
-        sm_apps_df, w = normalize_sm_applications(sm_applications_file)
+        sm_apps_df, w = normalize_sm_applications(sm_applications_file, school_year=sm_school_year)
         all_warnings.extend([f"[SM-Apps] {x}" for x in w])
 
     if sm_registrations_file is not None:
-        sm_regs_df, w = normalize_sm_registrations(sm_registrations_file)
+        sm_regs_df, w = normalize_sm_registrations(sm_registrations_file, school_year=sm_school_year)
         all_warnings.extend([f"[SM-Regs] {x}" for x in w])
 
     if not sm_apps_df.empty or not sm_regs_df.empty:

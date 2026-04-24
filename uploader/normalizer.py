@@ -1078,6 +1078,7 @@ def build_hs_funnel_summary(hs_df: pd.DataFrame) -> pd.DataFrame:
 def normalize_all(
     students_file, reenroll_file,
     schools_file=None, terms_file=None,
+    existing_students_df=None, existing_reenroll_df=None,
     existing_schools_df=None, existing_terms_df=None,
     sm_applications_file=None,
     sm_registrations_file=None,
@@ -1087,9 +1088,9 @@ def normalize_all(
 ) -> dict:
     """
     Run all normalizers and build summaries.
-    schools_file and terms_file are optional; when not provided the function
-    falls back to existing_schools_df / existing_terms_df (read from Sheets),
-    then to empty DataFrames with names resolved from SCHOOL_MAP constants.
+    All PS files are optional; when not provided the function falls back to
+    existing_* DataFrames (read from Sheets), then to empty DataFrames.
+    SM files (applications / registrations) are the primary required inputs.
     Returns dict with keys: students, reenrollments, schools, terms,
     summary_enrollment, summary_funnel, all_warnings, upload_timestamp.
     """
@@ -1121,11 +1122,33 @@ def normalize_all(
         terms_df = pd.DataFrame()
         all_warnings.append("[Terms] No terms file or existing data.")
 
-    students_df, w = normalize_students(students_file, schools_df)
-    all_warnings.extend([f"[Students] {x}" for x in w])
+    # Students
+    if students_file is not None:
+        students_df, w = normalize_students(students_file, schools_df)
+        all_warnings.extend([f"[Students] {x}" for x in w])
+    elif existing_students_df is not None and not existing_students_df.empty:
+        students_df = existing_students_df.copy()
+        for col in ["school_id", "student_id", "grade_level", "enroll_status", "next_school_id"]:
+            if col in students_df.columns:
+                students_df[col] = pd.to_numeric(students_df[col], errors="coerce").fillna(0).astype(int)
+        all_warnings.append("[Students] Using existing data from Google Sheet (no new file uploaded).")
+    else:
+        students_df = pd.DataFrame()
+        all_warnings.append("[Students] No students file or existing data — enrollment summaries will be empty.")
 
-    reenroll_df, w = normalize_reenrollments(reenroll_file, schools_df)
-    all_warnings.extend([f"[ReEnrollments] {x}" for x in w])
+    # ReEnrollments
+    if reenroll_file is not None:
+        reenroll_df, w = normalize_reenrollments(reenroll_file, schools_df)
+        all_warnings.extend([f"[ReEnrollments] {x}" for x in w])
+    elif existing_reenroll_df is not None and not existing_reenroll_df.empty:
+        reenroll_df = existing_reenroll_df.copy()
+        for col in ["school_id", "student_id", "school_year_start"]:
+            if col in reenroll_df.columns:
+                reenroll_df[col] = pd.to_numeric(reenroll_df[col], errors="coerce").fillna(0).astype(int)
+        all_warnings.append("[ReEnrollments] Using existing data from Google Sheet (no new file uploaded).")
+    else:
+        reenroll_df = pd.DataFrame()
+        all_warnings.append("[ReEnrollments] No reenrollments file or existing data — summaries will be empty.")
 
     summary_enrollment = build_summary_enrollment(reenroll_df, students_df, schools_df)
     summary_funnel = build_summary_funnel(students_df, reenroll_df)

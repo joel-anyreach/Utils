@@ -83,24 +83,40 @@ with st.sidebar:
 
 st.title("Ingenium Re-enrollment — Data Uploader")
 st.markdown(
-    "Upload the four PowerSchool CSV exports. The app will normalize them, "
-    "combine them, and push the results to Google Sheets."
+    "Upload SchoolMint exports to update the Recruitment Pipeline. "
+    "PowerSchool exports are optional — existing data from the Google Sheet will be used when not provided."
 )
 
 # ─── Step 1: Upload files ────────────────────────────────────────────────────
 
 st.markdown("## Step 1 — Upload CSV Files")
-st.markdown("**PowerSchool exports** (Students and ReEnrollments are required):")
+st.markdown("**SchoolMint exports** *(required — at least one)*:")
+
+col_sm1, col_sm2 = st.columns(2)
+with col_sm1:
+    sm_apps_file = st.file_uploader(
+        "SchoolMint Applications export (`schoolmint applications.csv`)",
+        type=["csv", "xlsx"],
+        key="sm_apps",
+    )
+with col_sm2:
+    sm_regs_file = st.file_uploader(
+        "SchoolMint Registrations export (`schoolmint registrations.csv`)",
+        type=["csv", "xlsx"],
+        key="sm_regs",
+    )
+
+st.markdown("**PowerSchool exports** *(optional — existing Sheet data used when not uploaded)*:")
 
 col1, col2 = st.columns(2)
 with col1:
     students_file = st.file_uploader(
-        "Students export (`Students_export_*.csv`)",
+        "Students export — optional (`Students_export_*.csv`)",
         type=["csv", "xlsx"],
         key="students",
     )
     reenroll_file = st.file_uploader(
-        "ReEnrollments export (`ReEnrollments_export_*.csv`)",
+        "ReEnrollments export — optional (`ReEnrollments_export_*.csv`)",
         type=["csv", "xlsx"],
         key="reenroll",
     )
@@ -114,22 +130,6 @@ with col2:
         "Terms export — optional (`Terms_export*.csv`)",
         type=["csv", "xlsx"],
         key="terms",
-    )
-
-st.markdown("**SchoolMint exports** (optional — enables Recruitment Pipeline tab in dashboard):")
-
-col_sm1, col_sm2 = st.columns(2)
-with col_sm1:
-    sm_apps_file = st.file_uploader(
-        "SchoolMint Applications export (`schoolmint applications.csv`) — optional",
-        type=["csv", "xlsx"],
-        key="sm_apps",
-    )
-with col_sm2:
-    sm_regs_file = st.file_uploader(
-        "SchoolMint Registrations export (`schoolmint registrations.csv`) — optional",
-        type=["csv", "xlsx"],
-        key="sm_regs",
     )
 
 _today = datetime.today()
@@ -147,12 +147,8 @@ sm_school_year = st.selectbox(
 )
 
 sm_uploaded = sm_apps_file is not None or sm_regs_file is not None
-if not sm_uploaded:
-    st.caption(
-        "SchoolMint files not uploaded — the Recruitment Pipeline tab will be unavailable in the dashboard."
-    )
 
-st.markdown("**HubSpot Contacts export** (required for Enrollment Funnel — needs SM + PS files above):")
+st.markdown("**HubSpot Contacts export** *(optional — enables Enrollment Funnel matching)*:")
 
 hs_file = st.file_uploader(
     "HubSpot Contacts export (`contacts_export*.csv` / `.xlsx`)",
@@ -175,21 +171,19 @@ elif not hs_uploaded:
 
 st.markdown("---")
 
-# Only Students + ReEnrollments are required; Schools + Terms fall back to Google Sheet
-all_uploaded = all([students_file, reenroll_file])
+# SchoolMint is required; all PS files fall back to Google Sheet when not uploaded
+all_uploaded = sm_apps_file is not None or sm_regs_file is not None
 
 if not all_uploaded:
-    missing = [
-        name for name, f in [
-            ("Students", students_file), ("ReEnrollments", reenroll_file),
-        ] if f is None
-    ]
-    st.info(f"Waiting for: {', '.join(missing)}")
-    opt_missing = [n for n, f in [("Schools", schools_file), ("Terms", terms_file)] if f is None]
-    if opt_missing:
+    st.info("Waiting for at least one SchoolMint file (Applications or Registrations).")
+    ps_missing = [n for n, f in [
+        ("Students", students_file), ("ReEnrollments", reenroll_file),
+        ("Schools", schools_file), ("Terms", terms_file),
+    ] if f is None]
+    if ps_missing:
         st.caption(
-            f"Optional not uploaded: {', '.join(opt_missing)}. "
-            "Existing data from the Google Sheet will be used when available."
+            f"PowerSchool files not uploaded ({', '.join(ps_missing)}) — "
+            "existing data from the Google Sheet will be used when available."
         )
     st.stop()
 
@@ -198,12 +192,22 @@ if not all_uploaded:
 st.markdown("---")
 st.markdown("## Step 2 — Validate & Preview")
 
-# Fetch existing schools/terms/funnel from Google Sheet when the files weren't uploaded
+# Fetch existing data from Google Sheet for any files not uploaded
+existing_students_df = pd.DataFrame()
+existing_reenroll_df = pd.DataFrame()
 existing_schools_df = pd.DataFrame()
 existing_terms_df = pd.DataFrame()
 existing_funnel_df = pd.DataFrame()
 if sheet_input.strip():
     with st.spinner("Fetching existing data from Google Sheet…"):
+        if students_file is None:
+            existing_students_df = sc.read_tab(sheet_input.strip(), SHEET_TABS["raw_students"])
+            if existing_students_df.empty:
+                st.caption("ℹ️ No existing students data in Sheet — enrollment summaries will be empty.")
+        if reenroll_file is None:
+            existing_reenroll_df = sc.read_tab(sheet_input.strip(), SHEET_TABS["raw_reenrollments"])
+            if existing_reenroll_df.empty:
+                st.caption("ℹ️ No existing reenrollments data in Sheet.")
         if schools_file is None:
             existing_schools_df = sc.read_tab(sheet_input.strip(), SHEET_TABS["raw_schools"])
             if existing_schools_df.empty:
@@ -219,6 +223,8 @@ with st.spinner("Parsing and normalizing data..."):
             students_file, reenroll_file,
             schools_file=schools_file,
             terms_file=terms_file,
+            existing_students_df=existing_students_df,
+            existing_reenroll_df=existing_reenroll_df,
             existing_schools_df=existing_schools_df,
             existing_terms_df=existing_terms_df,
             sm_applications_file=sm_apps_file,
@@ -257,12 +263,13 @@ else:
     st.success("No data quality issues found.")
 
 # Known edge-case info
-active_count = (normalized["students"]["enroll_status"].astype(str) == "0").sum()
-st.info(
-    f"**{active_count:,} currently active students** across all schools. "
-    "Schools with 0 active students (e.g., BOCS, ICCMS) are expected — "
-    "all students at those campuses may have transferred out."
-)
+if not normalized["students"].empty and "enroll_status" in normalized["students"].columns:
+    active_count = (normalized["students"]["enroll_status"].astype(str) == "0").sum()
+    st.info(
+        f"**{active_count:,} currently active students** across all schools. "
+        "Schools with 0 active students (e.g., BOCS, ICCMS) are expected — "
+        "all students at those campuses may have transferred out."
+    )
 
 # Data previews
 with st.expander("Preview: Students (first 10 rows)"):

@@ -1,6 +1,6 @@
 """
-Data normalization for PowerSchool CSV exports.
-Cleans, joins, and derives columns for all 4 export tables.
+Data normalization for PowerSchool and SchoolMint CSV exports.
+Cleans, joins, and derives columns for all data tables.
 """
 
 import io

@@ -310,7 +310,13 @@ def build_summary_enrollment(reenroll_df: pd.DataFrame,
     current_sy = today.year if today.month >= 8 else today.year - 1
 
     # Ensure key columns are numeric before comparisons
-    re = reenroll_df.copy()
+    re = reenroll_df.copy() if reenroll_df is not None else pd.DataFrame()
+    # Tolerate empty / partial ReEnrollments (leads-only or SM-only to a fresh Sheet):
+    # df.get(col, 0) returns the scalar 0 when the column is absent, which then breaks
+    # the .fillna() call — ensure the columns exist as proper Series first.
+    for _c in ["school_id", "student_id", "school_year_start", "school_year_label"]:
+        if _c not in re.columns:
+            re[_c] = 0
     re["school_id"]        = pd.to_numeric(re.get("school_id",        0), errors="coerce").fillna(0).astype(int)
     re["student_id"]       = pd.to_numeric(re.get("student_id",       0), errors="coerce").fillna(0).astype(int)
     re["school_year_start"]= pd.to_numeric(re.get("school_year_start",0), errors="coerce").fillna(0).astype(int)
@@ -385,6 +391,9 @@ def build_summary_funnel(students_df: pd.DataFrame, reenroll_df: pd.DataFrame) -
     (populated from the schools export during normalize_students), falling back to
     SCHOOL_MAP constants only when those columns are absent.
     """
+    # No active-student data (e.g. leads-only or SM-only to a fresh Sheet) → empty funnel
+    if students_df is None or students_df.empty:
+        return pd.DataFrame()
     stu = students_df.copy()
     stu["enroll_status"]   = pd.to_numeric(stu.get("enroll_status",   -1), errors="coerce").fillna(-1).astype(int)
     stu["school_id"]       = pd.to_numeric(stu.get("school_id",        0), errors="coerce").fillna(0).astype(int)
@@ -399,7 +408,10 @@ def build_summary_funnel(students_df: pd.DataFrame, reenroll_df: pd.DataFrame) -
     next_sy = current_sy + 1
 
     # Students with a reenrollment record for next year — cast to int first to avoid str/int mismatch
-    re = reenroll_df.copy()
+    re = reenroll_df.copy() if reenroll_df is not None else pd.DataFrame()
+    for _c in ["school_year_start", "student_id"]:
+        if _c not in re.columns:
+            re[_c] = 0
     re["school_year_start"] = pd.to_numeric(re.get("school_year_start", 0), errors="coerce").fillna(0).astype(int)
     re["student_id"]        = pd.to_numeric(re.get("student_id",        0), errors="coerce").fillna(0).astype(int)
     reenroll_next = set(re[re["school_year_start"] >= next_sy]["student_id"].unique())
@@ -1075,6 +1087,180 @@ def build_hs_funnel_summary(hs_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ── Nurture-lead export → enrollment_funnel ──────────────────────────────────
+
+# AI-nurture lead CSV header → HubSpot/funnel column name (simple 1:1 maps).
+# Special cases handled in code: Original Traffic Source → two columns;
+# Parent Name → First/Last Name; Student Names/Grades → Student #1/#2 columns.
+_LEAD_TO_HS_RENAME = {
+    "Email":         "Email",
+    "Phone":         "Phone Number",
+    "Last Email At": "Last Activity Date",
+    "Created At":    "Create Date",
+    "Referrer":      "Last Referring Site",
+    "UTM Campaign":  "utm_campaign",
+    "UTM Source":    "utm_source",
+    "UTM Term":      "utm_term",
+    "UTM Content":   "utm_content",
+    "UTM Medium":    "utm_medium",
+}
+
+# Funnel columns a matched lead overlays in place (plus Is_Lead). Also the write order.
+LEAD_TARGET_COLUMNS = [
+    "Email", "Phone Number", "First Name", "Last Name",
+    "Last Activity Date", "Create Date",
+    "Original Traffic Source", "Latest Traffic Source", "Last Referring Site",
+    "utm_campaign", "utm_source", "utm_term", "utm_content", "utm_medium",
+    "Student #1 First Name", "Student #1 Last Name", "Student #1 Grade Level",
+    "Student #2 First Name", "Student #2 Last Name", "Student #2 Grade Level",
+]
+
+
+def _split_name(full) -> tuple:
+    """Split a full name into (first, last): first token = first, remainder = last."""
+    parts = _s(full).strip().split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
+
+
+def _split_students(names, grades, warnings: list, context: str) -> dict:
+    """
+    Parse comma-separated Student Names / Student Grades into
+    Student #1/#2 First/Last/Grade Level columns (cap at 2; warn if more).
+    """
+    name_list  = [n.strip() for n in _s(names).split(",") if n.strip()]
+    grade_list = [g.strip() for g in _s(grades).split(",") if g.strip()]
+    if len(name_list) > 2:
+        warnings.append(
+            f"{context}: {len(name_list)} students listed ({name_list}); "
+            "only the first 2 are mapped to Student #1/#2."
+        )
+    out = {}
+    for i in range(2):  # Student #1, #2
+        first, last = _split_name(name_list[i]) if i < len(name_list) else ("", "")
+        grade = grade_list[i] if i < len(grade_list) else ""
+        out[f"Student #{i+1} First Name"]  = first
+        out[f"Student #{i+1} Last Name"]   = last
+        out[f"Student #{i+1} Grade Level"] = grade
+    return out
+
+
+def normalize_leads(file_obj) -> tuple[pd.DataFrame, list]:
+    """
+    Parse the AI-nurture lead export into HubSpot/funnel-shaped rows so they can
+    be reconciled by build_enrollment_funnel and merged into the enrollment_funnel
+    tab. Carries only the mapped fields (see _LEAD_TO_HS_RENAME / LEAD_TARGET_COLUMNS).
+    Returns (df, warnings).
+    """
+    warnings = []
+    df = _read_file(file_obj)
+    df = df.dropna(how="all")
+    if df.empty:
+        warnings.append("[Leads] File is empty.")
+        return pd.DataFrame(), warnings
+
+    out_rows = []
+    for _, r in df.iterrows():
+        row = {}
+        for src, dst in _LEAD_TO_HS_RENAME.items():
+            row[dst] = _s(r.get(src)).strip()
+        # Original Traffic Source → both Original + Latest
+        ots = _s(r.get("Original Traffic Source")).strip()
+        row["Original Traffic Source"] = ots
+        row["Latest Traffic Source"]   = ots
+        # Parent Name (fallback Name) → guardian First/Last
+        first, last = _split_name(r.get("Parent Name") or r.get("Name"))
+        row["First Name"] = first
+        row["Last Name"]  = last
+        # Student Names/Grades → Student #1/#2
+        row.update(_split_students(r.get("Student Names"), r.get("Student Grades"),
+                                   warnings, "[Leads]"))
+        # Skip rows with no usable key (neither email nor phone)
+        if not _ne(row.get("Email")) and not _np(row.get("Phone Number")):
+            continue
+        out_rows.append(row)
+
+    if not out_rows:
+        warnings.append("[Leads] No rows with a usable email or phone.")
+        return pd.DataFrame(), warnings
+
+    leads_df = pd.DataFrame(out_rows)
+    for c in LEAD_TARGET_COLUMNS:
+        if c not in leads_df.columns:
+            leads_df[c] = ""
+    leads_df = leads_df[LEAD_TARGET_COLUMNS]
+
+    # De-dupe within the file by email→phone key, keeping most recent by Create Date
+    leads_df["_key"] = leads_df.apply(
+        lambda x: _ne(x["Email"]) or _np(x["Phone Number"]), axis=1
+    )
+    leads_df["_sort"] = pd.to_datetime(leads_df["Create Date"], errors="coerce", dayfirst=True)
+    leads_df = (
+        leads_df.sort_values("_sort", ascending=False, na_position="last")
+        .drop_duplicates("_key", keep="first")
+        .drop(columns=["_key", "_sort"])
+        .reset_index(drop=True)
+    )
+
+    warnings.append(f"[Leads] {len(leads_df):,} leads parsed and shaped for the funnel.")
+    return leads_df, warnings
+
+
+def merge_lead_rows(existing_funnel_df: pd.DataFrame,
+                    leads_funnel_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Field-merge reconciled lead rows into the existing enrollment_funnel frame.
+    Match by normalized email (phone fallback): matched rows have only
+    LEAD_TARGET_COLUMNS overlaid (non-empty values) in place; unmatched leads are
+    appended as new rows. Non-matching existing rows are preserved unchanged.
+    """
+    if leads_funnel_df is None or leads_funnel_df.empty:
+        return existing_funnel_df if existing_funnel_df is not None else pd.DataFrame()
+
+    leads = leads_funnel_df.fillna("").astype(str)
+
+    if existing_funnel_df is None or existing_funnel_df.empty:
+        return leads.reset_index(drop=True)
+
+    existing = existing_funnel_df.fillna("").astype(str)
+
+    # Align columns: keep existing order, append any new lead columns at the end
+    for col in leads.columns:
+        if col not in existing.columns:
+            existing[col] = ""
+    leads = leads.reindex(columns=existing.columns, fill_value="")
+
+    # Index existing rows by normalized email / phone (first occurrence wins)
+    by_key = {}
+    for idx, er in existing.iterrows():
+        for k in (_ne(er.get("Email")), _np(er.get("Phone Number")), _np(er.get("Mobile Phone Number"))):
+            if k and k not in by_key:
+                by_key[k] = idx
+
+    overlay_cols = [c for c in LEAD_TARGET_COLUMNS if c in existing.columns]
+    appended = []
+    for _, lr in leads.iterrows():
+        key = _ne(lr.get("Email")) or _np(lr.get("Phone Number"))
+        match_idx = by_key.get(key)
+        if match_idx is not None:
+            for c in overlay_cols:
+                val = lr.get(c, "")
+                if val != "":
+                    existing.at[match_idx, c] = val
+            if "Is_Lead" in existing.columns:
+                existing.at[match_idx, "Is_Lead"] = "True"
+        else:
+            appended.append(lr)
+
+    if appended:
+        existing = pd.concat([existing, pd.DataFrame(appended)], ignore_index=True)
+
+    return existing.reset_index(drop=True)
+
+
 def normalize_all(
     students_file, reenroll_file,
     schools_file=None, terms_file=None,
@@ -1085,6 +1271,7 @@ def normalize_all(
     sm_school_year: str = "",
     hs_contacts_file=None,
     existing_funnel_df=None,
+    leads_file=None,
 ) -> dict:
     """
     Run all normalizers and build summaries.
@@ -1178,11 +1365,19 @@ def normalize_all(
         _HS_FUNNEL_COLS + _HS_SM_REG_COLS + _HS_SM_APP_COLS + _HS_PS_COLS
     )
 
+    # Only refresh the HubSpot funnel from stored rows when there is fresh
+    # HS/SM/PS data to rebuild against — a leads-only upload must not trigger a
+    # rebuild (which, with no SM data this run, would blank existing SM matches).
+    _funnel_refresh_inputs = any([
+        hs_contacts_file, sm_applications_file, sm_registrations_file,
+        students_file, reenroll_file,
+    ])
+
     raw_hs_df = pd.DataFrame()
     if hs_contacts_file is not None:
         raw_hs_df, w = normalize_hs_contacts(hs_contacts_file)
         all_warnings.extend(w)
-    elif existing_funnel_df is not None and not existing_funnel_df.empty:
+    elif _funnel_refresh_inputs and existing_funnel_df is not None and not existing_funnel_df.empty:
         # Re-use stored HS contact rows; strip derived match columns so they
         # are re-computed against the latest PS/SM data
         hs_cols = [c for c in existing_funnel_df.columns if c not in _derived_cols]
@@ -1205,6 +1400,20 @@ def normalize_all(
         )
         hs_funnel_summary_df = build_hs_funnel_summary(hs_contacts_df)
 
+    # Nurture leads (optional) — shape, reconcile against SM/PS, ready to merge
+    # into the enrollment_funnel tab by email/phone in push_all_data.
+    leads_funnel_df = pd.DataFrame()
+    if leads_file is not None:
+        leads_hs_df, w = normalize_leads(leads_file)
+        all_warnings.extend(w)
+        if not leads_hs_df.empty:
+            leads_funnel_df = build_enrollment_funnel(
+                leads_hs_df, sm_apps_df, sm_regs_df, students_df, reenroll_df
+            )
+            all_warnings.append(
+                f"[Leads] {len(leads_funnel_df):,} leads reconciled — will merge into enrollment_funnel."
+            )
+
     return {
         "students": students_df,
         "reenrollments": reenroll_df,
@@ -1217,6 +1426,7 @@ def normalize_all(
         "sm_recruitment": sm_recruitment_df,
         "hs_contacts": hs_contacts_df,
         "hs_funnel_summary": hs_funnel_summary_df,
+        "leads_funnel": leads_funnel_df,
         "all_warnings": all_warnings,
         "upload_timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
     }

@@ -220,6 +220,36 @@ def upsert_tab(
     return len(result)
 
 
+def merge_leads_into_funnel(spreadsheet, leads_funnel_df: pd.DataFrame, progress_cb=None) -> int:
+    """
+    Field-merge reconciled nurture-lead rows into the enrollment_funnel tab.
+    Matched rows (by email/phone) get the lead's mapped fields overlaid in place;
+    unmatched leads are appended; all other existing rows are preserved.
+    Returns total rows in the tab after the merge.
+    """
+    from gspread_dataframe import get_as_dataframe, set_with_dataframe
+    from normalizer import merge_lead_rows
+
+    tab_name = SHEET_TABS["enrollment_funnel"]
+    ws = _ensure_tab(spreadsheet, tab_name)
+
+    try:
+        existing = get_as_dataframe(ws, evaluate_formulas=False, dtype=str)
+        existing = existing.dropna(how="all").dropna(axis=1, how="all")
+    except Exception:
+        existing = pd.DataFrame()
+
+    merged = merge_lead_rows(existing, leads_funnel_df).fillna("").astype(str)
+
+    ws.clear()
+    set_with_dataframe(ws, merged, include_index=False, resize=True)
+    _format_funnel_tab(ws, merged)
+
+    if progress_cb:
+        progress_cb(tab_name, len(merged))
+    return len(merged)
+
+
 def append_upload_log(spreadsheet, log_row: dict):
     """Append one row to the upload_log tab (never overwrites)."""
     tab_name = SHEET_TABS["upload_log"]
@@ -231,7 +261,7 @@ def append_upload_log(spreadsheet, log_row: dict):
         "schools_rows", "terms_rows", "summary_enrollment_rows",
         "summary_funnel_rows", "sm_apps_rows", "sm_regs_rows",
         "sm_recruitment_rows", "hs_contacts_rows", "enrollment_funnel_summary_rows",
-        "warnings_count", "notes",
+        "leads_rows", "warnings_count", "notes",
     ]
     if not existing:
         ws.append_row(headers)
@@ -299,6 +329,12 @@ def push_all_data(
     if not normalized.get("hs_funnel_summary", pd.DataFrame()).empty:
         tab_map.append(("enrollment_funnel_summary", normalized["hs_funnel_summary"]))
 
+    # Nurture leads — field-merge into enrollment_funnel by email/phone (runs after
+    # any HubSpot upsert above so leads merge into the refreshed funnel).
+    if not normalized.get("leads_funnel", pd.DataFrame()).empty:
+        n = merge_leads_into_funnel(ss, normalized["leads_funnel"], progress_cb=progress_cb)
+        results["tabs_written"][SHEET_TABS["enrollment_funnel"]] = n
+
     for tab_key, df in tab_map:
         n = write_tab(ss, tab_key, df, progress_cb=progress_cb)
         results["tabs_written"][SHEET_TABS[tab_key]] = n
@@ -317,6 +353,7 @@ def push_all_data(
         "sm_recruitment_rows":      len(normalized.get("sm_recruitment", pd.DataFrame())),
         "hs_contacts_rows":                    len(normalized.get("hs_contacts", pd.DataFrame())),
         "enrollment_funnel_summary_rows":      len(normalized.get("hs_funnel_summary", pd.DataFrame())),
+        "leads_rows":               len(normalized.get("leads_funnel", pd.DataFrame())),
         "warnings_count":           len(normalized["all_warnings"]),
         "notes":                    "",
     })

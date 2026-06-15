@@ -169,13 +169,30 @@ elif not hs_uploaded:
         "match columns will be refreshed automatically using the latest PS/SM data."
     )
 
+st.markdown("**AI-Nurture Leads export** *(optional — merges into the Enrollment Funnel)*:")
+
+leads_file = st.file_uploader(
+    "Nurture Leads export (`*-leads-*.csv` / `.xlsx`)",
+    type=["csv", "xlsx"],
+    key="leads",
+    help="Each lead is matched into the enrollment_funnel tab by email (phone fallback): "
+         "a matching row is updated in place, a new lead is added as a new row, and all other "
+         "existing rows are preserved.",
+)
+leads_uploaded = leads_file is not None
+if leads_uploaded:
+    st.caption(
+        "Leads will be reconciled against SchoolMint/PowerSchool and merged into the "
+        "enrollment_funnel tab. Existing funnel rows are preserved."
+    )
+
 st.markdown("---")
 
-# SchoolMint is required; all PS files fall back to Google Sheet when not uploaded
-all_uploaded = sm_apps_file is not None or sm_regs_file is not None
+# SchoolMint or a Leads file is required; all PS files fall back to Google Sheet when not uploaded
+all_uploaded = sm_apps_file is not None or sm_regs_file is not None or leads_file is not None
 
 if not all_uploaded:
-    st.info("Waiting for at least one SchoolMint file (Applications or Registrations).")
+    st.info("Waiting for at least one SchoolMint file (Applications or Registrations) or a Leads export.")
     ps_missing = [n for n, f in [
         ("Students", students_file), ("ReEnrollments", reenroll_file),
         ("Schools", schools_file), ("Terms", terms_file),
@@ -232,6 +249,7 @@ with st.spinner("Parsing and normalizing data..."):
             sm_school_year=sm_school_year,
             hs_contacts_file=hs_file,
             existing_funnel_df=existing_funnel_df,
+            leads_file=leads_file,
         )
     except Exception as e:
         st.error(f"**Error during normalization:** {e}")
@@ -310,6 +328,22 @@ if not normalized["hs_contacts"].empty:
     with st.expander("Preview: Enrollment Funnel Summary"):
         st.dataframe(normalized["hs_funnel_summary"], use_container_width=True)
 
+if leads_uploaded and not normalized.get("leads_funnel", pd.DataFrame()).empty:
+    leads_df = normalized["leads_funnel"]
+    cl1, cl2, cl3 = st.columns(3)
+    cl1.metric("Leads → Funnel", f"{len(leads_df):,}")
+    if "Is_App" in leads_df.columns:
+        cl2.metric("In SchoolMint", f"{int((leads_df['Is_App'] == True).sum()):,}")
+    if "Is_Enrolled" in leads_df.columns:
+        cl3.metric("Currently Enrolled", f"{int((leads_df['Is_Enrolled'] == True).sum()):,}")
+
+    st.caption(
+        "These leads will be merged into the enrollment_funnel tab by email/phone "
+        "(matching rows updated in place, new leads appended)."
+    )
+    with st.expander("Preview: Leads → Funnel (first 10 rows)"):
+        st.dataframe(leads_df.head(10), use_container_width=True)
+
 # ─── Step 3: Push to Sheets ──────────────────────────────────────────────────
 
 st.markdown("---")
@@ -334,6 +368,8 @@ if st.button("Push to Google Sheets", type="primary", use_container_width=True):
         steps += ["raw_sm_applications", "raw_sm_registrations", "summary_sm_recruitment"]
     if hs_uploaded or not existing_funnel_df.empty:
         steps += ["enrollment_funnel", "enrollment_funnel_summary"]
+    elif leads_uploaded and not normalized.get("leads_funnel", pd.DataFrame()).empty:
+        steps += ["enrollment_funnel"]
     completed_steps = []
 
     def progress_cb(tab_name, n_rows):
